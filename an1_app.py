@@ -70,6 +70,9 @@ COLLECTION_NAME = an1_build.COLLECTION_NAME
 AN2_PATH = an1_build.AN2_PATH
 PERSIST_AN2_DIR = an1_build.PERSIST_AN2_DIR
 COLLECTION_AN2 = an1_build.COLLECTION_AN2
+AN3_PATH = an1_build.AN3_PATH
+PERSIST_AN3_DIR = an1_build.PERSIST_AN3_DIR
+COLLECTION_AN3 = an1_build.COLLECTION_AN3
 GONG_MP3_PATH = (
     Path(os.environ.get("DAMA_GONG_MP3", "").strip()).expanduser().resolve()
     if os.environ.get("DAMA_GONG_MP3", "").strip()
@@ -451,14 +454,14 @@ class QueryRequest(BaseModel):
     use_llm: bool = Field(default=True)
     book: str = Field(
         default="all",
-        description="Legacy: an1/an2/all. Local Chroma always searches AN1+AN2 together.",
+        description="Books: an1/an2/an3/all. Local Chroma searches requested books when indexes exist.",
     )
 
     @field_validator("book")
     @classmethod
     def _norm_query_book(cls, v: str) -> str:
         b = (v or "all").strip().lower()
-        return b if b in ("an1", "an2", "all") else "all"
+        return b if b in ("an1", "an2", "an3", "all") else "all"
 
 
 class Chunk(BaseModel):
@@ -514,7 +517,7 @@ _items_cache: Dict[str, List[ItemDetail]] = {}
 
 def _norm_book(book: Optional[str]) -> str:
     b = (book or "an1").strip().lower()
-    return b if b in ("an1", "an2") else "an1"
+    return b if b in ("an1", "an2", "an3") else "an1"
 
 def _normalize_suttaid_an1(raw: Any) -> str:
     """
@@ -549,11 +552,19 @@ def _normalize_commentary_id(raw: Any) -> str:
 
 
 def _persist_dir_for_book(book: str) -> Path:
-    return PERSIST_AN2_DIR if book == "an2" else PERSIST_DIR
+    if book == "an2":
+        return PERSIST_AN2_DIR
+    if book == "an3":
+        return PERSIST_AN3_DIR
+    return PERSIST_DIR
 
 
 def _collection_name_for_book(book: str) -> str:
-    return COLLECTION_AN2 if book == "an2" else COLLECTION_NAME
+    if book == "an2":
+        return COLLECTION_AN2
+    if book == "an3":
+        return COLLECTION_AN3
+    return COLLECTION_NAME
 
 
 def _get_collection(book: str = "an1") -> Any:
@@ -610,7 +621,7 @@ def _lexical_retrieve_from_items(query: str, k: int, *, book: str = "all") -> Li
         return []
 
     raw_book = (book or "all").strip().lower()
-    if raw_book in ("an1", "an2"):
+    if raw_book in ("an1", "an2", "an3"):
         items = _load_items(raw_book)
     else:
         items = _merged_item_details()
@@ -630,7 +641,12 @@ def _lexical_retrieve_from_items(query: str, k: int, *, book: str = "all") -> Li
     scored: List[Tuple[int, str, str, ItemDetail]] = []
     for it in items:
         sid = (it.suttaid or "").strip()
-        bk = "an2" if sid.strip().startswith("AN 2.") or sid.strip().startswith("AN2.") else "an1"
+        if sid.strip().startswith("AN 3.") or sid.strip().startswith("AN3."):
+            bk = "an3"
+        elif sid.strip().startswith("AN 2.") or sid.strip().startswith("AN2."):
+            bk = "an2"
+        else:
+            bk = "an1"
         s_sutta = score_blob(f"{sid}\n{it.sutta}")
         if s_sutta > 0:
             scored.append((s_sutta, bk, "sutta", it))
@@ -909,11 +925,14 @@ def _retrieve(embed_model: Any, collection: Any, query: str, k: int) -> List[Chu
 
 
 def _retrieve_merged_local(embed_model: Any, query: str, k: int) -> List[Chunk]:
-    """Retrieve from AN1 + AN2 Chroma with roughly equal budget, then merge rank + pair-inject."""
-    k1 = max(1, (k + 1) // 2)
-    k2 = max(1, k - k1)
+    """Retrieve from AN1 + AN2 + AN3 Chroma with roughly equal budget, then merge rank + pair-inject."""
+    # Split k roughly equally across available books
+    k1 = max(1, (k + 2) // 3)
+    k2 = max(1, (k + 1) // 3)
+    k3 = max(1, k - k1 - k2)
     out1: List[Chunk] = []
     out2: List[Chunk] = []
+    out3: List[Chunk] = []
     if PERSIST_DIR.exists():
         try:
             col1 = _get_collection("an1")
@@ -926,7 +945,13 @@ def _retrieve_merged_local(embed_model: Any, query: str, k: int) -> List[Chunk]:
             out2 = [c.model_copy(update={"book": "an2"}) for c in _retrieve(embed_model, col2, query, k2)]
         except Exception:
             pass
-    merged = _dedupe_chunks_keep_order(out1 + out2)
+    if PERSIST_AN3_DIR.exists():
+        try:
+            col3 = _get_collection("an3")
+            out3 = [c.model_copy(update={"book": "an3"}) for c in _retrieve(embed_model, col3, query, k3)]
+        except Exception:
+            pass
+    merged = _dedupe_chunks_keep_order(out1 + out2 + out3)
     merged.sort(
         key=lambda c: (
             -_lexical_score(query, c.text),
@@ -941,9 +966,15 @@ def _retrieve_merged_local(embed_model: Any, query: str, k: int) -> List[Chunk]:
 
 def _vertex_bundle_row_meta(row: Dict[str, Any]) -> Dict[str, str]:
     book = str(row.get("book") or "").strip().lower()
-    if book not in ("an1", "an2"):
+    if book not in ("an1", "an2", "an3"):
         src = str(row.get("source") or "")
-        book = "an2" if "an2" in src.lower() else "an1"
+        sl = src.lower()
+        if "an3" in sl:
+            book = "an3"
+        elif "an2" in sl:
+            book = "an2"
+        else:
+            book = "an1"
     return {
         "source": str(row.get("source") or ""),
         "suttaid": str(row.get("suttaid") or ""),
@@ -954,11 +985,13 @@ def _vertex_bundle_row_meta(row: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _vertex_quota_pick(sorted_chunks: List[Chunk], k: int) -> List[Chunk]:
-    """Roughly equal picks per book (an1/an2), in global score order, then fill to k."""
+    """Roughly equal picks per book (an1/an2/an3), in global score order, then fill to k."""
     if k <= 0 or not sorted_chunks:
         return []
-    books_present = sorted({((c.book or "an1").lower()) for c in sorted_chunks if (c.book or "an1").lower() in ("an1", "an2")})
-    books_present = [b for b in books_present if b in ("an1", "an2")]
+    books_present = sorted(
+        {((c.book or "an1").lower()) for c in sorted_chunks if (c.book or "an1").lower() in ("an1", "an2", "an3")}
+    )
+    books_present = [b for b in books_present if b in ("an1", "an2", "an3")]
     if not books_present:
         books_present = ["an1"]
     n = len(books_present)
@@ -1335,6 +1368,10 @@ def _merged_item_details() -> List[ItemDetail]:
         if it.suttaid not in seen:
             out.append(it)
             seen.add(it.suttaid)
+    for it in _load_items("an3"):
+        if it.suttaid not in seen:
+            out.append(it)
+            seen.add(it.suttaid)
     return out
 
 
@@ -1348,6 +1385,9 @@ def _find_item_by_suttaid(suttaid: str) -> Optional[ItemDetail]:
     for it in _load_items("an2"):
         if _normalize_suttaid_an2(it.suttaid) == _normalize_suttaid_an2(want):
             return it
+    for it in _load_items("an3"):
+        if _normalize_suttaid_an2(it.suttaid) == _normalize_suttaid_an2(want):
+            return it
     return None
 
 
@@ -1359,6 +1399,9 @@ def _find_item_by_commentary_id(commentary_id: str) -> Optional[ItemDetail]:
         if _normalize_commentary_id(it.commentary_id) == want:
             return it
     for it in _load_items("an2"):
+        if _normalize_commentary_id(it.commentary_id) == want:
+            return it
+    for it in _load_items("an3"):
         if _normalize_commentary_id(it.commentary_id) == want:
             return it
     return None
@@ -1378,7 +1421,12 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
     if b in _items_cache:
         return _items_cache[b]
 
-    path = AN2_PATH if b == "an2" else AN1_PATH
+    if b == "an2":
+        path = AN2_PATH
+    elif b == "an3":
+        path = AN3_PATH
+    else:
+        path = AN1_PATH
     if not path.exists():
         _dbg("H1", "an1_app.py:_load_items", "JSON missing", {"book": b, "path": str(path)})
         _items_cache[b] = []
@@ -1407,7 +1455,7 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
         for obj in data:
             if not isinstance(obj, dict):
                 continue
-            if b == "an2":
+            if b in ("an2", "an3"):
                 sid = _normalize_suttaid_an2(obj.get("sutta_id") or obj.get("suttaid"))
                 sutta = str(obj.get("sutta") or "").strip()
                 comm = _commentary_body(obj)
@@ -1892,17 +1940,20 @@ def _collection_count_safe(book: str) -> int:
 
 
 def _vertex_chunk_counts_by_book(bundle: Dict[str, Any]) -> Tuple[int, int, int]:
-    """Return (total, an1_chunks, an2_chunks) from embedded Vertex chunk rows (book field)."""
+    """Return (total, an1_chunks, an2_chunks, an3_chunks) from embedded Vertex chunk rows (book field)."""
     rows = vx.bundle_chunk_rows(bundle)
     n1 = 0
     n2 = 0
+    n3 = 0
     for r in rows:
         bk = str((r or {}).get("book") or "").strip().lower()
         if bk == "an2":
             n2 += 1
+        elif bk == "an3":
+            n3 += 1
         elif bk == "an1":
             n1 += 1
-    return len(rows), n1, n2
+    return len(rows), n1, n2, n3
 
 
 @app.get("/api/index_status")
@@ -1910,7 +1961,7 @@ def api_index_status() -> JSONResponse:
     if vx.an1_vertex_enabled():
         try:
             b = vx.ensure_bundle_loaded(PERSIST_DIR)
-            n, n_an1_v, n_an2_v = _vertex_chunk_counts_by_book(b)
+            n, n_an1_v, n_an2_v, n_an3_v = _vertex_chunk_counts_by_book(b)
             meta = vx.bundle_meta_for_status(b)
             return JSONResponse(
                 {
@@ -1918,11 +1969,14 @@ def api_index_status() -> JSONResponse:
                     "count": n,
                     "vertex_an1_chunks": n_an1_v,
                     "vertex_an2_chunks": n_an2_v,
+                    "vertex_an3_chunks": n_an3_v,
                     "mode": "vertex",
                     "persist_dir": str(PERSIST_DIR.resolve()),
                     "an1_path": str(AN1_PATH.resolve()),
                     "an2_path": str(AN2_PATH.resolve()),
+                    "an3_path": str(AN3_PATH.resolve()),
                     "an2_count": _collection_count_safe("an2"),
+                    "an3_count": _collection_count_safe("an3"),
                     "runtime": os.environ.get("DAMA_RUNTIME", "").strip() or None,
                     "build": AN1_APP_BUILD,
                     "bundle_gcs": os.environ.get("AN1_VERTEX_BUNDLE_GCS_URI", "").strip(),
@@ -1942,11 +1996,14 @@ def api_index_status() -> JSONResponse:
                     "count": 0,
                     "vertex_an1_chunks": 0,
                     "vertex_an2_chunks": 0,
+                    "vertex_an3_chunks": 0,
                     "mode": "vertex",
                     "persist_dir": str(PERSIST_DIR.resolve()),
                     "an1_path": str(AN1_PATH.resolve()),
                     "an2_path": str(AN2_PATH.resolve()),
+                    "an3_path": str(AN3_PATH.resolve()),
                     "an2_count": _collection_count_safe("an2"),
+                    "an3_count": _collection_count_safe("an3"),
                     "build": AN1_APP_BUILD,
                     "error": str(e),
                 }
@@ -1954,16 +2011,20 @@ def api_index_status() -> JSONResponse:
 
     c1 = _collection_count_safe("an1")
     c2 = _collection_count_safe("an2")
+    c3 = _collection_count_safe("an3")
     return JSONResponse(
         {
-            "exists": bool(c1 > 0 or c2 > 0),
+            "exists": bool(c1 > 0 or c2 > 0 or c3 > 0),
             "count": c1,
             "an2_count": c2,
+            "an3_count": c3,
             "mode": "local_chroma",
             "persist_dir": str(PERSIST_DIR.resolve()),
             "persist_an2_dir": str(PERSIST_AN2_DIR.resolve()),
+            "persist_an3_dir": str(PERSIST_AN3_DIR.resolve()),
             "an1_path": str(AN1_PATH.resolve()),
             "an2_path": str(AN2_PATH.resolve()),
+            "an3_path": str(AN3_PATH.resolve()),
             "build": AN1_APP_BUILD,
         }
     )
@@ -1980,7 +2041,7 @@ def api_build(
 ) -> BuildResponse:
     _require_api_user(request, authorization)
     raw = (book or "all").strip().lower()
-    b = raw if raw in ("an1", "an2", "all") else "all"
+    b = raw if raw in ("an1", "an2", "an3", "all") else "all"
     with _lock:
         _dbg("H2", "an1_app.py:api_build", "Build requested", {"book": b})
         try:
@@ -1989,6 +2050,7 @@ def api_build(
 
                 an1_build.build_an1_index()
                 an1_build.build_an2_index()
+                an1_build.build_an3_index()
                 corpus_dir = PERSIST_DIR / "vertex_corpus"
                 upload_base = os.environ.get("AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS", "").strip()
                 write_vertex_corpus(corpus_dir, upload_base_gcs=upload_base)
@@ -1996,6 +2058,11 @@ def api_build(
                 bundle = vx.ensure_bundle_loaded(PERSIST_DIR)
                 _invalidate_items_cache()
                 return BuildResponse(ok=True, collection_count=len(vx.bundle_chunk_rows(bundle)))
+
+            if b == "an3":
+                an1_build.build_an3_index()
+                _invalidate_items_cache("an3")
+                return BuildResponse(ok=True, collection_count=_collection_count_safe("an3"))
 
             if b == "an2":
                 an1_build.build_an2_index()
@@ -2010,10 +2077,13 @@ def api_build(
             an1_build.build_an1_index()
             if AN2_PATH.exists():
                 an1_build.build_an2_index()
+            if AN3_PATH.exists():
+                an1_build.build_an3_index()
             _invalidate_items_cache()
             c1 = _collection_count_safe("an1")
             c2 = _collection_count_safe("an2")
-            return BuildResponse(ok=True, collection_count=c1 + c2)
+            c3 = _collection_count_safe("an3")
+            return BuildResponse(ok=True, collection_count=c1 + c2 + c3)
         except Exception as e:
             _dbg("H2", "an1_app.py:api_build", "Build failed", {"error": str(e)})
             raise HTTPException(status_code=500, detail=str(e))

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from an1_build_index import (
     AN1_PATH,
     AN2_PATH,
+    AN3_PATH,
     BASE_DIR,
     PERSIST_DIR,
     _extract_records_fallback,
@@ -62,6 +63,23 @@ def _gather_chunk_specs_an2(data: List[Dict[str, Any]]) -> List[Tuple[str, str, 
     return out
 
 
+def _gather_chunk_specs_an3(data: List[Dict[str, Any]]) -> List[Tuple[str, str, str, str, str, str]]:
+    """
+    AN3 uses AN2-style fields (sutta_id/commentary/chain), so reuse AN2 doc builder.
+    """
+    out: List[Tuple[str, str, str, str, str, str]] = []
+    source_rel = str(AN3_PATH.relative_to(BASE_DIR)).replace("\\", "/")
+    for rec in data:
+        if not isinstance(rec, dict):
+            continue
+        for doc_kind, suttaid, comm_id, doc_text in _record_to_docs_an2(rec):
+            if not (doc_text or "").strip():
+                continue
+            for chunk in read_in_chunks_from_string(doc_text):
+                out.append(("an3", doc_kind, suttaid, comm_id, source_rel, chunk))
+    return out
+
+
 def specs_for_book(book: str) -> List[Tuple[str, str, str, str, str, str]]:
     b = (book or "").strip().lower()
     if b == "an1":
@@ -86,7 +104,18 @@ def specs_for_book(book: str) -> List[Tuple[str, str, str, str, str, str]]:
         if not isinstance(parsed2, list):
             raise ValueError("Expected an2.json to be a JSON list of records.")
         return _gather_chunk_specs_an2(parsed2)
-    raise ValueError(f"Unknown book {book!r} (supported: an1, an2)")
+    if b == "an3":
+        if not AN3_PATH.exists():
+            raise FileNotFoundError(f"Missing an3.json at: {AN3_PATH}")
+        raw3 = AN3_PATH.read_text(encoding="utf-8", errors="ignore")
+        try:
+            parsed3 = _parse_json_lenient(raw3)
+        except Exception:
+            parsed3 = _extract_records_fallback(raw3)
+        if not isinstance(parsed3, list):
+            raise ValueError("Expected an3.json to be a JSON list of records.")
+        return _gather_chunk_specs_an3(parsed3)
+    raise ValueError(f"Unknown book {book!r} (supported: an1, an2, an3)")
 
 
 def build_shard_dict(book: str) -> Dict[str, Any]:
@@ -125,8 +154,10 @@ def write_vertex_corpus(out_dir: Path, *, upload_base_gcs: str = "") -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     em = vx.embedding_model_name()
     shard_entries: List[Dict[str, Any]] = []
-    for book in ("an1", "an2"):
+    for book in ("an1", "an2", "an3"):
         if book == "an2" and not AN2_PATH.exists():
+            continue
+        if book == "an3" and not AN3_PATH.exists():
             continue
         shard_name = f"shard_{book}.json"
         shard_path = out_dir / shard_name
@@ -159,6 +190,8 @@ def build_bundle_dict() -> Dict[str, Any]:
     specs: List[Tuple[str, str, str, str, str, str]] = specs_for_book("an1")
     if AN2_PATH.exists():
         specs.extend(specs_for_book("an2"))
+    if AN3_PATH.exists():
+        specs.extend(specs_for_book("an3"))
 
     texts = [s[5] for s in specs]
     vectors = vx.embed_texts_vertex(texts)

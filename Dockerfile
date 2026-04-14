@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # App code + corpora. (Persisted Chroma indexes are not committed; build at runtime via /api/build.)
 COPY an1_app.py an1_build_index.py an1_vertex_core.py an1_build_vertex_bundle.py dama_firebase_auth.py dama_auth_ui.py dama_diy_auth.py chat_embed.html /app/
-COPY an1.json an2.json /app/
+COPY an1.json an2.json an3.json /app/
 COPY aud/audio_map.json /app/aud/audio_map.json
 
 EXPOSE 8080

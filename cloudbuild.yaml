@@ -3,8 +3,20 @@ substitutions:
   _SERVICE: dama5
   _REPO: dama5
   _IMAGE: asia-south1-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
+  _VERTEX_CORPUS_GCS: gs://dama-492316-an-data-9690/vertex_corpus
 
 steps:
+  - name: python:3.11-slim
+    entrypoint: bash
+    env:
+      - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
+      - "GOOGLE_CLOUD_REGION=${_REGION}"
+    args:
+      - -lc
+      - |
+        python -m pip install --no-cache-dir -r requirements-an1-vertex.txt
+        python an1_build_vertex_bundle.py --shards /workspace/vertex_corpus --upload-base "${_VERTEX_CORPUS_GCS}"
+
   - name: gcr.io/cloud-builders/docker
     args: ["build", "-t", "${_IMAGE}", "."]
 
@@ -21,7 +33,7 @@ steps:
       - "--platform=managed"
       - "--image=${_IMAGE}"
       - "--allow-unauthenticated"
-      - "--set-env-vars=DAMA_AUDIO_GCS_BUCKET=dama-492316-an-data-9690,DAMA_AUDIO_GCS_PREFIX=aud/,DAMA_AUDIO_URL_TTL_SECONDS=900"
+      - "--set-env-vars=DAMA_RUNTIME=cloud,AN1_USE_VERTEX=1,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_REGION=${_REGION},AN1_VERTEX_MANIFEST_GCS_URI=${_VERTEX_CORPUS_GCS}/manifest.json,DAMA_AUDIO_GCS_BUCKET=dama-492316-an-data-9690,DAMA_AUDIO_GCS_PREFIX=aud/,DAMA_AUDIO_URL_TTL_SECONDS=900"
 
 images:
   - "${_IMAGE}"
