@@ -2,7 +2,7 @@ substitutions:
   _REGION: asia-south1
   _SERVICE: dama5
   _REPO: dama5
-  _IMAGE: asia-south1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+  _IMAGE: asia-south1-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
 
 steps:
   - name: gcr.io/cloud-builders/docker
