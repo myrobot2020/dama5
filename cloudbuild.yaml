@@ -1,0 +1,28 @@
+substitutions:
+  _REGION: asia-south1
+  _SERVICE: dama5
+  _REPO: dama5
+  _IMAGE: asia-south1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}", "."]
+
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}"]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - "${_SERVICE}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--image=${_IMAGE}"
+      - "--allow-unauthenticated"
+      - "--set-env-vars=DAMA_AUDIO_GCS_BUCKET=dama-492316-an-data-9690,DAMA_AUDIO_GCS_PREFIX=aud/,DAMA_AUDIO_URL_TTL_SECONDS=900"
+
+images:
+  - "${_IMAGE}"
+
