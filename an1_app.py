@@ -1492,6 +1492,79 @@ if AUD_DIR.is_dir():
     app.mount("/aud", StaticFiles(directory=str(AUD_DIR)), name="aud")
 
 
+def _audio_gcs_bucket() -> str:
+    return os.environ.get("DAMA_AUDIO_GCS_BUCKET", "").strip() or ""
+
+
+def _audio_gcs_prefix() -> str:
+    # Default to "aud/" so blob path is aud/<filename>.mp3
+    p = os.environ.get("DAMA_AUDIO_GCS_PREFIX", "").strip() or "aud/"
+    p = p.lstrip("/")
+    if p and not p.endswith("/"):
+        p += "/"
+    return p
+
+
+def _audio_signed_url_ttl_seconds() -> int:
+    try:
+        return int(os.environ.get("DAMA_AUDIO_URL_TTL_SECONDS", "").strip() or "900")
+    except ValueError:
+        return 900
+
+
+def _safe_audio_filename(name: str) -> str:
+    s = (name or "").strip().replace("\\", "/")
+    while s.startswith("/"):
+        s = s[1:]
+    if not s or ".." in s or s.startswith("."):
+        raise HTTPException(status_code=400, detail="invalid audio filename")
+    if "/" in s:
+        # Keep it simple: audio_map.json stores a flat filename; disallow subpaths.
+        raise HTTPException(status_code=400, detail="audio filename must not contain '/'")
+    return s
+
+
+@app.get("/api/audio_url")
+def api_audio_url(
+    request: Request,
+    file: str = Query(..., min_length=1, description="Audio filename from aud/audio_map.json"),
+    authorization: Annotated[Optional[str], Header()] = None,
+) -> JSONResponse:
+    """
+    Return a short-lived signed URL for a private GCS audio object: gs://<bucket>/<prefix><file>.
+    Used by the UI so teacher audio works on Cloud Run without bundling MP3s into the image.
+    """
+    _require_api_user(request, authorization)
+    bucket = _audio_gcs_bucket()
+    if not bucket:
+        raise HTTPException(status_code=400, detail="DAMA_AUDIO_GCS_BUCKET is not set")
+    fname = _safe_audio_filename(file)
+    blob_name = _audio_gcs_prefix() + fname
+    ttl = _audio_signed_url_ttl_seconds()
+    if ttl < 60:
+        ttl = 60
+    if ttl > 3600:
+        ttl = 3600
+
+    try:
+        from datetime import timedelta
+
+        from google.cloud import storage  # type: ignore
+
+        client = storage.Client()
+        blob = client.bucket(bucket).blob(blob_name)
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=ttl),
+            method="GET",
+        )
+        return JSONResponse({"url": url, "expires_in": ttl, "bucket": bucket, "object": blob_name})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to sign audio URL: {e}") from e
+
+
 @app.get("/assets/gong.mp3")
 def serve_gong_mp3() -> FileResponse:
     if not GONG_MP3_PATH.is_file():

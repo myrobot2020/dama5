@@ -1806,7 +1806,18 @@
           }
         } catch (e) {}
 
-        const src = '/aud/' + encodeURIComponent(file).replace(/%2F/g, '/');
+        // Audio files live in private GCS. Request a short-lived signed URL from the backend.
+        // Fallback to local /aud/<file> only if signing fails (useful for fully-offline dev).
+        let src = '';
+        try {
+          const resp = await fetchJson('/api/audio_url?file=' + encodeURIComponent(file), { method: 'GET' });
+          if (resp && typeof resp === 'object' && typeof resp.url === 'string' && resp.url.trim()) {
+            src = resp.url.trim();
+          }
+        } catch (e) {}
+        if (!src) {
+          src = '/aud/' + encodeURIComponent(file).replace(/%2F/g, '/');
+        }
         const mustLoad = !_commAudioSeg || _commAudioSeg.key !== key || _commAudioSeg.file !== file;
         _commAudioSeg = { key, file, start_s: startS, end_s: endS };
 
