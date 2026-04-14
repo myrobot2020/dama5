@@ -1,0 +1,2120 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <title>Dama — AN1 &amp; AN2</title>
+    <!-- __FIREBASE_HEAD_INJECT__ -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" crossorigin="anonymous"></script>
+    <style>
+      :root {
+        --bg: #0b0f19;
+        --panel: #0f1626;
+        --panel2: #0c1220;
+        --text: #e9eefc;
+        --muted: #a7b3d6;
+        --border: rgba(255,255,255,.10);
+        --border2: rgba(255,255,255,.07);
+        --accent: #ffcc33;
+        --accent2: #7c5cff;
+        --good: #41d17a;
+        --bad: #ff5c7a;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        color: var(--text);
+        background: radial-gradient(1200px 700px at 20% 0%, #1c2a50 0%, var(--bg) 58%) fixed;
+      }
+      .topbar {
+        height: 54px;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(0,0,0,.22);
+        backdrop-filter: blur(6px);
+      }
+      .brand { display:flex; flex-direction: column; gap: 2px; }
+      .brand .name { font-size: 13px; letter-spacing: .2px; }
+      .brand .sub { font-size: 11px; color: var(--muted); }
+      .rightmeta { display:flex; gap:10px; align-items:center; color: var(--muted); font-size: 12px; flex-wrap: wrap; justify-content: flex-end; }
+      /* Link pairs (reference panel); violet so it is not confused with sutta chain labels in data */
+      .reading .chainFlow {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        margin-top: 6px;
+      }
+      .reading .chainNode {
+        border: 1px solid rgba(124, 92, 255, 0.32);
+        border-left: 3px solid rgba(129, 140, 248, 0.75);
+        border-radius: 8px;
+        padding: 7px 10px;
+        background: rgba(12, 18, 32, 0.92);
+        font-size: 12px;
+        line-height: 1.38;
+        color: #dbe6ff;
+      }
+      .reading .chainFlowSep {
+        align-self: center;
+        padding: 3px 0;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        color: #a5b4fc;
+        text-shadow: none;
+      }
+      .layout {
+        height: calc(100% - 54px);
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px;
+        min-height: 0;
+      }
+      .convCol {
+        flex: 2 1 0;
+        min-width: 140px;
+        max-width: 28%;
+        min-height: 0;
+        transition: flex-basis 0.22s ease, min-width 0.22s ease, max-width 0.22s ease;
+      }
+      .convCol.collapsed {
+        flex: 0 0 42px;
+        min-width: 42px;
+        max-width: 42px;
+      }
+      .convCol.collapsed .convBody { display: none !important; }
+      .convCol.collapsed .convTitle { display: none; }
+      .convCol.collapsed .hdr { justify-content: center; padding-left: 4px; padding-right: 4px; }
+      .chatCol {
+        flex: 5 1 0;
+        min-width: 200px;
+        min-height: 0;
+      }
+      .readGrip {
+        flex: 0 0 12px;
+        width: 12px;
+        margin: 0 -4px;
+        cursor: col-resize;
+        align-self: stretch;
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        z-index: 3;
+        user-select: none;
+      }
+      .readGrip::before {
+        content: '';
+        width: 4px;
+        border-radius: 3px;
+        background: rgba(255,255,255,.12);
+        margin: 16px 0;
+        align-self: stretch;
+      }
+      .readGrip:hover::before { background: rgba(124,92,255,.45); }
+      .readingCol {
+        flex: 3 1 0;
+        min-width: 220px;
+        max-width: 55vw;
+        min-height: 0;
+      }
+      .layout.resizing { cursor: col-resize; }
+      .layout.resizing * { cursor: col-resize !important; user-select: none !important; }
+      .pane { border: 1px solid var(--border); border-radius: 14px; background: rgba(15,22,38,.78); backdrop-filter: blur(6px); overflow: hidden; display:flex; flex-direction: column; min-height: 0; }
+      .pane .hdr { padding: 8px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border2); display:flex; align-items:center; justify-content: space-between; gap: 10px;}
+      .pane .body { padding: 8px 10px; min-height: 0; overflow: auto; }
+      .searchRow { display:flex; gap: 8px; align-items:center; }
+      input[type="text"], textarea {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,.22);
+        color: var(--text);
+        padding: 8px 10px;
+        outline: none;
+      }
+      button {
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,.06);
+        color: var(--text);
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+      button.primary { background: linear-gradient(180deg, rgba(124,92,255,.9), rgba(124,92,255,.6)); border-color: rgba(124,92,255,.7); }
+      button.warn { background: linear-gradient(180deg, rgba(255,204,51,.40), rgba(255,204,51,.18)); border-color: rgba(255,204,51,.35); }
+      button:disabled { opacity: .55; cursor: not-allowed; }
+      .list { display:flex; flex-direction: column; gap: 8px; }
+      .card {
+        border: 1px solid var(--border2);
+        background: rgba(0,0,0,.16);
+        border-radius: 12px;
+        padding: 10px 10px;
+        cursor: pointer;
+      }
+      .card:hover { border-color: rgba(255,255,255,.18); }
+      .card .row1 { display:flex; justify-content: space-between; gap: 10px; align-items:center; }
+      .sid { font-size: 12px; color: var(--text); font-weight: 700; }
+      .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border2); padding: 3px 8px; border-radius: 999px; }
+      .title { margin-top: 6px; font-size: 12px; color: #dbe6ff; line-height: 1.25; }
+      .sectionTitle { font-size: 12px; color: var(--muted); margin: 10px 0 6px; }
+      .reading h2 { margin: 0; font-size: 12px; color: var(--muted); letter-spacing: .6px; }
+      .reading .suttaHdrRow { margin-top: 0; margin-bottom: 6px; }
+      .reading .txt { margin-top: 8px; white-space: pre-wrap; word-break: break-word; color: #dbe6ff; font-size: 13px; line-height: 1.42; }
+      .reading #suttaText.txt.prose {
+        margin-top: 8px;
+        white-space: normal;
+        max-width: 70ch;
+        font-size: 15px;
+        line-height: 1.7;
+        color: #dbe6ff;
+      }
+      .reading #suttaText.txt.prose .refPara { margin: 0 0 1em; }
+      .reading #suttaText.txt.prose .refPara:last-child { margin-bottom: 0; }
+      .reading .split { height: 1px; background: var(--border2); margin: 12px 0; }
+      .reading .pastConv {
+        margin-top: 8px;
+        max-height: 260px;
+        overflow-y: auto;
+        border: 1px solid var(--border2);
+        border-radius: 12px;
+        background: rgba(0,0,0,.14);
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .reading details.pastTurn {
+        border: 1px solid var(--border2);
+        border-radius: 10px;
+        background: rgba(0,0,0,.18);
+        overflow: hidden;
+      }
+      .reading details.pastTurn > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 8px 10px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 12px;
+        line-height: 1.35;
+        color: #dbe6ff;
+        user-select: none;
+      }
+      .reading details.pastTurn > summary::-webkit-details-marker { display: none; }
+      .reading details.pastTurn > summary::before {
+        content: '▸';
+        flex: 0 0 auto;
+        color: var(--muted);
+        margin-right: 6px;
+        font-size: 10px;
+        margin-top: 2px;
+      }
+      .reading details.pastTurn[open] > summary::before { content: '▾'; }
+      .reading .pastSumMain { flex: 1; min-width: 0; word-break: break-word; }
+      .reading .pastSumMeta { flex: 0 0 auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+      .reading details.pastTurn .pastBody {
+        padding: 0 10px 10px 28px;
+        border-top: 1px solid var(--border2);
+        background: rgba(0,0,0,.12);
+      }
+      .reading .pastQ { color: #dbe6ff; white-space: pre-wrap; word-break: break-word; margin-top: 8px; font-size: 12px; line-height: 1.4; }
+      .reading .pastA { color: #dbe6ff; white-space: pre-wrap; word-break: break-word; margin-top: 8px; font-size: 12px; line-height: 1.4; opacity: .96; }
+      .muted { color: var(--muted); font-size: 12px; }
+      .chatArea { display:flex; flex-direction: column; gap: 8px; min-height: 0; }
+      .chatLog { flex: 1; min-height: 0; overflow: auto; padding-bottom: 2px; }
+      textarea { resize: none; min-height: 44px; max-height: 180px; line-height: 1.35; overflow-y: auto; }
+      .chatLog { display:flex; flex-direction: column; gap: 10px; }
+      .msg { display:flex; }
+      .bubble {
+        max-width: 92%;
+        border-radius: 14px;
+        border: 1px solid var(--border2);
+        padding: 10px 10px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 13px;
+        line-height: 1.42;
+        background: rgba(0,0,0,.14);
+      }
+      .msg.user { justify-content: flex-end; }
+      .msg.user .bubble { background: rgba(124,92,255,.18); border-color: rgba(124,92,255,.35); }
+      .msg.asst { justify-content: flex-start; }
+      .msg.asst .bubble { background: rgba(0,0,0,.14); white-space: normal; }
+      .msg.asst .bubble small.cite { font-size: 0.76em; color: var(--muted); font-weight: 500; }
+      a.cite.cite-open,
+      button.cite.cite-open {
+        display: inline-block;
+        font: inherit;
+        font-size: 0.92em;
+        color: #c4b5ff;
+        background: transparent;
+        border: none;
+        padding: 0 1px;
+        margin: 0;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        vertical-align: baseline;
+        border-radius: 4px;
+      }
+      .md a.cite.cite-open { color: #c4b5ff; }
+      a.cite.cite-open:hover,
+      button.cite.cite-open:hover { color: #ffe08a; background: rgba(255,224,138,.08); }
+      .bubble.bubbleErr { border-color: rgba(255,92,122,.45); background: rgba(255,92,122,.08); }
+      .md { font-size: 13px; line-height: 1.5; }
+      .md > *:first-child { margin-top: 0; }
+      .md > *:last-child { margin-bottom: 0; }
+      .md p { margin: 0.55em 0; }
+      .md h1, .md h2, .md h3, .md h4 { margin: 0.75em 0 0.35em; font-weight: 600; color: #e9eefc; }
+      .md h1 { font-size: 1.15em; } .md h2 { font-size: 1.08em; } .md h3 { font-size: 1.02em; }
+      .md ol { margin: 0.45em 0; padding-left: 1.35em; }
+      .md ol > li { margin: 0.2em 0; }
+      .md ul {
+        list-style: none;
+        margin: 0.45em 0;
+        padding-left: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .md ul > li {
+        margin: 0;
+        list-style: none;
+        border: 1px solid rgba(212,175,55,.28);
+        border-radius: 8px;
+        padding: 6px 10px;
+        background: linear-gradient(165deg, rgba(212,175,55,.06), rgba(90,120,200,.04));
+        color: #e8e4dc;
+      }
+      .md ul > li:not(:first-child)::before {
+        content: '↓';
+        display: block;
+        text-align: center;
+        padding: 5px 0 7px;
+        margin: -2px 0 2px;
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1;
+        color: #d4af37;
+        text-shadow: 0 0 10px rgba(212,175,55,.28);
+      }
+      .md blockquote { margin: 0.5em 0; padding-left: 0.85em; border-left: 3px solid rgba(124,92,255,.45); color: #c9d4f0; }
+      .md a { color: #b8a8ff; }
+      .md table { border-collapse: collapse; width: 100%; margin: 0.6em 0; font-size: 12px; }
+      .md th, .md td { border: 1px solid var(--border2); padding: 6px 8px; text-align: left; }
+      .md th { background: rgba(0,0,0,.2); }
+      .preWrap { position: relative; margin: 0.55em 0; }
+      .preWrap pre {
+        margin: 0;
+        padding: 10px 10px 10px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--border2);
+        background: rgba(0,0,0,.35);
+        overflow-x: auto;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .codeCopy {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        z-index: 1;
+        padding: 4px 8px;
+        font-size: 11px;
+        border-radius: 8px;
+        border: 1px solid var(--border2);
+        background: rgba(0,0,0,.45);
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .codeCopy:hover { color: var(--text); border-color: rgba(255,255,255,.2); }
+      .md-fallback { white-space: pre-wrap; }
+      .quote {
+        border: 1px solid var(--border2);
+        background: rgba(0,0,0,.12);
+        border-radius: 12px;
+        padding: 10px;
+      }
+      .quote .meta { display:flex; gap:10px; flex-wrap: wrap; align-items:center; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+      .quote .meta b { color: var(--text); font-weight: 700; }
+      .quote pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #dbe6ff; font-size: 12.5px; line-height: 1.35; }
+      .copy { margin-left: auto; padding: 5px 9px; border-radius: 10px; border: 1px solid var(--border2); background: rgba(255,255,255,.04); cursor: pointer; color: var(--muted); }
+      .small { font-size: 11px; }
+      .row { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+      .spacer { flex: 1; }
+      .toggle { display:flex; align-items:center; gap: 8px; }
+      .kInput { width: 76px; }
+      .kInput { height: 30px; padding: 6px 8px; border-radius: 10px; }
+      .tightBtn { height: 30px; padding: 6px 10px; border-radius: 10px; }
+      .audioCtlRow { display:flex; align-items:center; gap: 8px; flex-wrap: wrap; }
+      .audioCtlRow input[type="range"] { accent-color: rgba(124,92,255,.95); }
+      .audioSeek { width: min(280px, 38vw); }
+      .audioVol { width: 110px; }
+      .audioTime { min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+      .audioCtlRow input:disabled { opacity: .55; }
+      .audioSeekWrap { display: none; align-items: center; gap: 8px; }
+      .hdrLabel { font-size: 12px; color: var(--muted); }
+      .msgFooter { margin-top: 6px; display:flex; align-items:center; gap: 8px; color: var(--muted); font-size: 11px; }
+      .thumb { padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border2); background: rgba(255,255,255,.04); cursor: pointer; color: var(--muted); }
+      .thumb.active { border-color: rgba(255,204,51,.45); color: #ffe08a; background: rgba(255,204,51,.10); }
+      .composer { display:flex; gap: 8px; align-items: flex-end; }
+      .composer textarea { flex: 1; }
+      .composer .right { display:flex; gap: 8px; align-items:center; }
+      .composer .right label { display:flex; align-items:center; gap: 6px; }
+      .pane.chatCol .body { display:flex; flex-direction: column; min-height: 0; }
+      .convCol .body.convBody { display: flex; flex-direction: column; min-height: 0; gap: 8px; padding-top: 6px; }
+      .convList {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-right: 4px;
+      }
+      .convItem {
+        text-align: left;
+        padding: 6px 8px;
+        border-radius: 10px;
+        border: 1px solid var(--border2);
+        background: rgba(0,0,0,.14);
+        color: var(--text);
+        font-size: 11px;
+        line-height: 1.3;
+        cursor: pointer;
+      }
+      .convItem:hover { border-color: rgba(255,255,255,.18); }
+      .convItem.active { border-color: rgba(124,92,255,.55); background: rgba(124,92,255,.14); }
+      .convItem .t { font-weight: 600; color: #dbe6ff; }
+      .convItem .d { color: var(--muted); font-size: 10px; margin-top: 2px; }
+      .profileBackdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        background: rgba(0,0,0,.55);
+        backdrop-filter: blur(4px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+      }
+      .profileBackdrop.open { display: flex; }
+      .profileBox {
+        width: min(360px, calc(100vw - 32px));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(15,22,38,.96);
+        padding: 16px;
+        box-shadow: 0 12px 48px rgba(0,0,0,.45);
+      }
+      .profileBox h3 { margin: 0 0 8px; font-size: 14px; color: var(--text); font-weight: 650; }
+      .profileBox label { display: block; margin-bottom: 4px; }
+      @media (max-width: 900px) {
+        .layout { flex-direction: column; }
+        .convCol { flex: 0 0 auto; width: 100%; max-width: none; max-height: 200px; }
+        .convCol.collapsed { max-height: 48px; }
+        .readGrip { display: none; }
+        .readingCol { width: 100% !important; max-width: none; flex: 1 1 auto; min-height: 220px; }
+        .chatCol { flex: 1 1 auto; min-height: 240px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="brand">
+        <div class="name" id="brandName">Dama</div>
+        <div class="sub">
+          <span>Index: <span id="idxStatus">unknown</span></span>
+        </div>
+      </div>
+      <div class="rightmeta">
+        <span id="profileGreet" class="small" style="color:#dbe6ff;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        <button type="button" id="profileBtn" class="tightBtn">Profile</button>
+        <button type="button" id="rebuild" class="warn tightBtn">Rebuild</button>
+      </div>
+    </div>
+
+    <div class="layout" id="mainLayout">
+      <div class="pane convCol" id="convCol">
+        <div class="hdr">
+          <span class="convTitle">Past chats</span>
+          <button type="button" id="convToggleBtn" class="tightBtn" title="Collapse past chats">«</button>
+        </div>
+        <div class="body convBody">
+          <div class="row" style="flex-shrink:0;align-items:center;">
+            <button type="button" id="newConvBtn" class="tightBtn">New chat</button>
+            <span class="muted small" id="convPanelHint" style="margin-left:6px;">Pick a thread</span>
+          </div>
+          <div id="convList" class="convList"></div>
+        </div>
+      </div>
+
+      <div class="pane chatCol">
+        <div class="hdr">
+          <div class="hdrLabel">Chat</div>
+          <div class="muted small" style="text-align:right;max-width:min(220px,42vw);line-height:1.35;" title="Enter to send · Shift+Enter for newline">Enter=send · Shift+Enter=newline</div>
+        </div>
+        <div class="body">
+          <div class="chatArea">
+            <div id="chatLog" class="chatLog"></div>
+            <div class="composer">
+              <textarea id="q" placeholder="Ask across AN1 and AN2…" rows="1"></textarea>
+              <div class="right">
+                <button type="button" id="stopAsk" class="tightBtn" style="display:none;">Stop</button>
+                <button type="button" id="regenBtn" class="tightBtn" disabled
+                  title="Re-sends your last question to the model without adding a new user message, so you can get an alternative answer in this thread.">↻</button>
+                <button type="button" id="ask" class="primary tightBtn" onclick="window.__damaAsk&amp;&amp;window.__damaAsk();">Send</button>
+              </div>
+            </div>
+            <div id="chatStatus" class="muted small"></div>
+            <div id="quotes"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="readGrip" id="readGrip" role="separator" aria-orientation="vertical" title="Drag to resize Reference panel"></div>
+
+      <div class="pane reading readingCol" id="readingCol">
+        <div class="hdr">
+          <div>Reference</div>
+          <div class="muted" id="readingMeta"></div>
+        </div>
+        <div class="body">
+          <div id="readingEmpty" class="muted">Click an (AN …) or (cAN …) citation in chat to open sutta and commentary here. When a sutta has link metadata, use Sutta / Links above.</div>
+          <div id="readingBody" style="display:none;">
+            <div id="refModeRow" class="row refModeRow" style="display:none;margin-bottom:10px;gap:6px;align-items:center;">
+              <span class="muted small">Reference</span>
+              <button type="button" id="refModeSutta" class="tightBtn primary">Sutta</button>
+              <button type="button" id="refModeLinks" class="tightBtn">Links</button>
+            </div>
+            <div id="panelSutta">
+              <h2 class="suttaHdrRow" style="margin:0;">SUTTA</h2>
+              <div id="suttaText" class="txt"></div>
+              <div class="split"></div>
+              <div class="row audioCtlRow" style="align-items:center;gap:8px;">
+                <h2 style="margin:0;">TEACHER COMMENTARY</h2>
+                <div class="spacer"></div>
+                <button type="button" id="commAudioPlay" class="tightBtn" title="Play mapped teacher audio for this commentary (requires aud/audio_map.json).">🔊</button>
+                <button type="button" id="commAudioPause" class="tightBtn" title="Pause audio" style="display:none;">⏸</button>
+                <button type="button" id="commAudioStop" class="tightBtn" title="Stop audio" style="display:none;">⏹</button>
+                <span id="commAudioSeekWrap" class="audioSeekWrap">
+                  <input id="commAudioSeek" class="audioSeek" type="range" min="0" max="100" step="0.05" value="0" disabled title="Seek within mapped audio segment" />
+                  <span id="commAudioTime" class="muted small audioTime" title="Playback time">--:-- / --:--</span>
+                </span>
+                <input id="commAudioVol" class="audioVol" type="range" min="0" max="1" step="0.01" value="0.70" title="Volume" />
+              </div>
+              <div id="commAudioStatus" class="muted small" style="margin-top:6px;"></div>
+              <div id="commText" class="txt"></div>
+            </div>
+            <div id="panelLinks" style="display:none;">
+              <h2>LINKS</h2>
+              <div id="chainSummary" class="muted small" style="margin-bottom:8px;"></div>
+              <div id="chainVisual" class="txt"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="profileBackdrop" class="profileBackdrop" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+      <div class="profileBox">
+        <h3 id="profileTitle">Profile</h3>
+        <p id="profileHint" class="muted small" style="margin:0 0 12px;">Display name is saved on the server when you use account login (DIY or Firebase).</p>
+        <label class="muted small" for="profileNameInput">Display name</label>
+        <input type="text" id="profileNameInput" maxlength="128" placeholder="How we greet you" autocomplete="nickname" />
+        <div class="sectionTitle" style="margin-top:12px;">Recent activity</div>
+        <div id="profileActivity" class="muted small" style="max-height:140px;overflow-y:auto;border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:8px;"></div>
+        <div class="row" style="margin-top:14px; justify-content:flex-end; gap:8px;">
+          <button type="button" id="profileSignOut" class="tightBtn">Sign out</button>
+          <button type="button" id="profileSave" class="primary tightBtn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // #region agent log
+      function __agentDbg(hypothesisId, location, message, data) {
+        try {
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '721082' },
+            body: JSON.stringify({
+              sessionId: '721082',
+              runId: 'pre-fix',
+              hypothesisId: hypothesisId,
+              location: location,
+              message: message,
+              data: data || {},
+              timestamp: Date.now(),
+            }),
+          }).catch(() => {});
+        } catch (e) {}
+      }
+      // #endregion agent log
+
+      const idxStatusEl = document.getElementById('idxStatus');
+      const rebuildBtn = document.getElementById('rebuild');
+      const askBtn = document.getElementById('ask');
+      const qEl = document.getElementById('q');
+      const chatStatusEl = document.getElementById('chatStatus');
+      const quotesEl = document.getElementById('quotes');
+      const chatLogEl = document.getElementById('chatLog');
+      const stopAskBtn = document.getElementById('stopAsk');
+      const regenBtn = document.getElementById('regenBtn');
+
+      const readingEmptyEl = document.getElementById('readingEmpty');
+      const readingBodyEl = document.getElementById('readingBody');
+      const readingMetaEl = document.getElementById('readingMeta');
+      const suttaTextEl = document.getElementById('suttaText');
+      const commTextEl = document.getElementById('commText');
+      const commAudioPlayBtn = document.getElementById('commAudioPlay');
+      const commAudioPauseBtn = document.getElementById('commAudioPause');
+      const commAudioStopBtn = document.getElementById('commAudioStop');
+      const commAudioStatusEl = document.getElementById('commAudioStatus');
+      const commAudioSeekWrapEl = document.getElementById('commAudioSeekWrap');
+      const commAudioSeekEl = document.getElementById('commAudioSeek');
+      const commAudioVolEl = document.getElementById('commAudioVol');
+      const commAudioTimeEl = document.getElementById('commAudioTime');
+      const convListEl = document.getElementById('convList');
+      const newConvBtn = document.getElementById('newConvBtn');
+      const convPanelHint = document.getElementById('convPanelHint');
+      const convCol = document.getElementById('convCol');
+      const convToggleBtn = document.getElementById('convToggleBtn');
+      const mainLayout = document.getElementById('mainLayout');
+      const readGrip = document.getElementById('readGrip');
+      const readingCol = document.getElementById('readingCol');
+
+      let _activeCommentaryId = '';
+      let _audMap = null;
+      let _audMapLoad = null;
+      let _commAudio = null;
+      let _commAudioSeg = null; // { key, file, start_s, end_s }
+      let _commAudioTick = null;
+      let _commAudioUserSeeking = false;
+      let _commAudioLastUiUpdate = 0;
+
+      function setCommAudioStatus(msg) {
+        if (!commAudioStatusEl) return;
+        commAudioStatusEl.textContent = (msg || '').toString();
+      }
+
+      function _fmtTime(secs) {
+        const s = Math.max(0, Number(secs) || 0);
+        const m = Math.floor(s / 60);
+        const r = Math.floor(s - m * 60);
+        return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+      }
+
+      function _syncCommAudioUi() {
+        try {
+          if (!commAudioSeekEl || !commAudioTimeEl) return;
+          if (!_commAudioSeg || !_commAudio) {
+            if (commAudioSeekWrapEl) commAudioSeekWrapEl.style.display = 'none';
+            commAudioSeekEl.disabled = true;
+            commAudioSeekEl.min = '0';
+            commAudioSeekEl.max = '100';
+            commAudioSeekEl.value = '0';
+            commAudioTimeEl.textContent = '--:-- / --:--';
+            return;
+          }
+          if (commAudioSeekWrapEl) commAudioSeekWrapEl.style.display = 'inline-flex';
+          const startS = Number(_commAudioSeg.start_s);
+          const endS = Number(_commAudioSeg.end_s);
+          const t = Number(_commAudio.currentTime || 0);
+          if (!Number.isFinite(startS) || !Number.isFinite(endS) || endS <= startS) return;
+
+          commAudioSeekEl.disabled = false;
+          commAudioSeekEl.min = String(startS);
+          commAudioSeekEl.max = String(endS);
+          if (!_commAudioUserSeeking) {
+            const clamped = Math.min(Math.max(t, startS), endS);
+            commAudioSeekEl.value = String(clamped);
+          }
+          const cur = Math.min(Math.max(t - startS, 0), Math.max(endS - startS, 0));
+          const dur = Math.max(endS - startS, 0);
+          commAudioTimeEl.textContent = _fmtTime(cur) + ' / ' + _fmtTime(dur);
+        } catch (e) {}
+      }
+
+      async function loadAudioMapOnce() {
+        if (_audMap) return _audMap;
+        if (_audMapLoad) return _audMapLoad;
+        _audMapLoad = (async () => {
+          try {
+            const m = await fetchJson('/aud/audio_map.json', { method: 'GET' });
+            _audMap = (m && typeof m === 'object') ? m : {};
+          } catch (e) {
+            _audMap = {};
+          }
+          return _audMap;
+        })();
+        return _audMapLoad;
+      }
+
+      function _syncCommAudioButtons(state) {
+        // state: 'idle' | 'playing' | 'paused'
+        if (!commAudioPlayBtn || !commAudioPauseBtn || !commAudioStopBtn) return;
+        if (state === 'playing') {
+          commAudioPlayBtn.style.display = 'none';
+          commAudioPauseBtn.style.display = '';
+          commAudioStopBtn.style.display = '';
+        } else if (state === 'paused') {
+          commAudioPlayBtn.style.display = '';
+          commAudioPauseBtn.style.display = 'none';
+          commAudioStopBtn.style.display = '';
+        } else {
+          commAudioPlayBtn.style.display = '';
+          commAudioPauseBtn.style.display = 'none';
+          commAudioStopBtn.style.display = 'none';
+        }
+        _syncCommAudioUi();
+      }
+
+      function _stopCommAudioInternal({ quiet } = {}) {
+        try {
+          if (_commAudio) {
+            _commAudio.pause();
+            _commAudio.currentTime = 0;
+          }
+        } catch (e) {}
+        _commAudioSeg = null;
+        if (!quiet) setCommAudioStatus('');
+        _syncCommAudioButtons('idle');
+      }
+
+      function _installBoundaryEnforcer() {
+        if (_commAudioTick) return;
+        _commAudioTick = setInterval(() => {
+          try {
+            if (!_commAudio || !_commAudioSeg) return;
+            const now = Date.now();
+            // Keep UI responsive without updating on every tick while the user is dragging the slider.
+            if (now - _commAudioLastUiUpdate > 180) {
+              _commAudioLastUiUpdate = now;
+              _syncCommAudioUi();
+            }
+            const endS = Number(_commAudioSeg.end_s);
+            if (!Number.isFinite(endS) || endS <= 0) return;
+            const t = Number(_commAudio.currentTime || 0);
+            if (t >= endS - 0.05) {
+              _stopCommAudioInternal({ quiet: true });
+              setCommAudioStatus('Done.');
+            }
+          } catch (e) {}
+        }, 120);
+      }
+      const refModeRow = document.getElementById('refModeRow');
+      const refModeSuttaBtn = document.getElementById('refModeSutta');
+      const refModeLinksBtn = document.getElementById('refModeLinks');
+      const panelSutta = document.getElementById('panelSutta');
+      const panelLinks = document.getElementById('panelLinks');
+      const chainSummaryEl = document.getElementById('chainSummary');
+      const chainVisualEl = document.getElementById('chainVisual');
+      const REF_MODE_KEY = 'dama_ref_panel_mode';
+      const profileBackdrop = document.getElementById('profileBackdrop');
+      const profileBtn = document.getElementById('profileBtn');
+      const profileGreet = document.getElementById('profileGreet');
+      const profileNameInput = document.getElementById('profileNameInput');
+      const profileSave = document.getElementById('profileSave');
+      const profileSignOut = document.getElementById('profileSignOut');
+      const PROFILE_KEY = 'an1_profile_name';
+      let suttaRaw = '';
+      let lastSuttaParagraphMeta = null;
+      // #region agent log
+      __agentDbg('H1', 'an1_app.py:inline_js:init', 'Reference panel element probe', {
+        hasRefModeRow: !!refModeRow,
+        hasRefModeSuttaBtn: !!refModeSuttaBtn,
+        hasRefModeLinksBtn: !!refModeLinksBtn,
+        hasPanelSutta: !!panelSutta,
+        hasPanelLinks: !!panelLinks,
+        hasChainSummaryEl: !!chainSummaryEl,
+        hasChainVisualEl: !!chainVisualEl,
+      });
+      // #endregion agent log
+
+      /**
+       * Partition raw sutta into contiguous [start,end) ranges covering every character (for future highlight offsets).
+       */
+      function partitionIntoParagraphs(raw) {
+        if (raw == null || raw.length === 0) return [{ start: 0, end: 0 }];
+        if (/\\n\\n/.test(raw)) {
+          const r = [];
+          let start = 0;
+          const re = /\\n\\n+/g;
+          let m;
+          while ((m = re.exec(raw)) !== null) {
+            r.push({ start: start, end: m.index });
+            start = m.index + m[0].length;
+          }
+          r.push({ start: start, end: raw.length });
+          return r;
+        }
+        const sents = [];
+        const re = /[\\s\\S]*?[.!?](?:\\s+|$)/g;
+        let m;
+        while ((m = re.exec(raw)) !== null) {
+          sents.push({ start: m.index, end: m.index + m[0].length });
+        }
+        if (sents.length === 0) {
+          return [{ start: 0, end: raw.length }];
+        }
+        const lastEnd = sents[sents.length - 1].end;
+        if (lastEnd < raw.length) {
+          sents.push({ start: lastEnd, end: raw.length });
+        }
+        const ranges = [];
+        let gStart = sents[0].start;
+        let gEnd = sents[0].end;
+        let sentCount = 1;
+        for (let i = 1; i < sents.length; i++) {
+          const next = sents[i];
+          const candEnd = next.end;
+          const candLen = candEnd - gStart;
+          const segStart = raw.slice(next.start, Math.min(next.start + 48, next.end));
+          const breakStem = /Monks,\\s+I know not|I know not of any other single thing/i.test(segStart);
+          if (sentCount >= 4 || candLen > 450 || (sentCount >= 2 && breakStem)) {
+            ranges.push({ start: gStart, end: gEnd });
+            gStart = next.start;
+            gEnd = next.end;
+            sentCount = 1;
+          } else {
+            gEnd = candEnd;
+            sentCount++;
+          }
+        }
+        ranges.push({ start: gStart, end: gEnd });
+        return ranges;
+      }
+
+      /**
+       * Future: wrap [start,end) in suttaRaw (global `suttaRaw`) with <mark> inside the correct <p>; offsets are relative to that raw string, not HTML.
+       */
+      function highlightRawRangeInSutta(_el, _raw, _start, _end, _meta) {
+        return;
+      }
+
+      function renderSuttaReading(el, raw) {
+        if (!el) return;
+        el.classList.remove('prose');
+        el.innerHTML = '';
+        el.classList.add('prose');
+        const r = raw == null ? '' : String(raw);
+        const parts = partitionIntoParagraphs(r);
+        lastSuttaParagraphMeta = { raw: r, parts: parts };
+        for (let i = 0; i < parts.length; i++) {
+          const pr = parts[i];
+          const seg = r.slice(pr.start, pr.end);
+          const p = document.createElement('p');
+          p.className = 'refPara';
+          p.textContent = seg;
+          el.appendChild(p);
+        }
+      }
+
+      function syncUiHints() {
+        if (qEl) qEl.placeholder = 'Ask across AN1 and AN2…';
+        if (readingEmptyEl) {
+          readingEmptyEl.textContent =
+            'Click an (AN …) or (cAN …) citation in chat to open sutta and commentary here. When a sutta has link metadata, use Sutta / Links above.';
+        }
+        if (refModeRow) refModeRow.style.display = 'none';
+        if (panelSutta && panelLinks && refModeSuttaBtn && refModeLinksBtn) {
+          panelLinks.style.display = 'none';
+          panelSutta.style.display = '';
+          refModeSuttaBtn.classList.add('primary');
+          refModeLinksBtn.classList.remove('primary');
+        }
+      }
+
+      function getRefMode() {
+        try {
+          const m = (localStorage.getItem(REF_MODE_KEY) || 'sutta').toLowerCase();
+          return m === 'links' ? 'links' : 'sutta';
+        } catch (e) {
+          return 'sutta';
+        }
+      }
+
+      function setRefMode(m) {
+        const v = m === 'links' ? 'links' : 'sutta';
+        try {
+          localStorage.setItem(REF_MODE_KEY, v);
+        } catch (e) {}
+        if (!refModeSuttaBtn || !refModeLinksBtn) return;
+        refModeSuttaBtn.classList.toggle('primary', v === 'sutta');
+        refModeLinksBtn.classList.toggle('primary', v === 'links');
+        if (!refModeRow || refModeRow.style.display === 'none') return;
+        if (panelSutta) panelSutta.style.display = v === 'sutta' ? '' : 'none';
+        if (panelLinks) panelLinks.style.display = v === 'links' ? '' : 'none';
+      }
+
+      function renderChainVisual(chain) {
+        if (!chainVisualEl || !chainSummaryEl) return;
+        if (!chain || typeof chain !== 'object') {
+          chainSummaryEl.textContent = '';
+          chainVisualEl.textContent = '(no chain for this discourse)';
+          return;
+        }
+        const cat = (chain.category || '').toString().trim();
+        const items = Array.isArray(chain.items) ? chain.items : [];
+        const n = chain.count != null ? Number(chain.count) : items.length;
+        const ord = !!chain.is_ordered;
+        chainSummaryEl.textContent =
+          (cat ? 'Category: ' + cat + ' · ' : '') + (ord ? 'Ordered' : 'Unordered') + (n ? ' · ' + n + ' items' : '');
+        if (!items.length) {
+          chainVisualEl.textContent = '';
+          return;
+        }
+        const sep = ord ? '→' : '↓';
+        const parts = [];
+        for (let i = 0; i < items.length; i++) {
+          parts.push('<div class="chainNode">' + esc(String(items[i])) + '</div>');
+          if (i < items.length - 1) {
+            parts.push('<div class="chainFlowSep" aria-hidden="true">' + sep + '</div>');
+          }
+        }
+        chainVisualEl.innerHTML = '<div class="chainFlow">' + parts.join('') + '</div>';
+      }
+
+      let _gongAudio = null;
+      let _gongPrimed = false;
+      /** Browsers block unmuted play() after async unless audio was started during a user gesture; prime with a silent play. */
+      function primeGongAudioFromUserGesture() {
+        if (_gongPrimed) return;
+        try {
+          if (!_gongAudio) {
+            _gongAudio = new Audio('/assets/gong.mp3');
+            _gongAudio.preload = 'auto';
+            _gongAudio.volume = 0.52;
+          }
+          _gongAudio.muted = true;
+          _gongAudio.pause();
+          _gongAudio.currentTime = 0;
+          const p = _gongAudio.play();
+          const after = () => {
+            try {
+              _gongAudio.pause();
+              _gongAudio.currentTime = 0;
+              _gongAudio.muted = false;
+              _gongAudio.volume = 0.52;
+              _gongPrimed = true;
+            } catch (e2) {}
+          };
+          if (p && typeof p.then === 'function') p.then(after).catch(after);
+          else after();
+        } catch (e) {}
+      }
+      (function installGongGesturePrime() {
+        let done = false;
+        const onFirst = () => {
+          if (done) return;
+          done = true;
+          document.removeEventListener('pointerdown', onFirst, true);
+          document.removeEventListener('keydown', onFirst, true);
+          primeGongAudioFromUserGesture();
+        };
+        document.addEventListener('pointerdown', onFirst, { capture: true });
+        document.addEventListener('keydown', onFirst, { capture: true });
+      })();
+      function playPing() {
+        try {
+          if (!_gongAudio) {
+            _gongAudio = new Audio('/assets/gong.mp3');
+            _gongAudio.preload = 'auto';
+            _gongAudio.volume = 0.52;
+          }
+          _gongAudio.muted = false;
+          _gongAudio.volume = 0.52;
+          _gongAudio.pause();
+          _gongAudio.currentTime = 0;
+          void _gongAudio.play().catch(() => {});
+        } catch (e) {}
+      }
+
+      function esc(s) { return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+      function escAttr(s) {
+        return String(s ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+      function normalizeSuttaCiteRef(raw) {
+        const t0 = String(raw || '').trim().replace(/\\s+/g, ' ');
+        let m = t0.match(/^cAN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
+        if (m) return 'cAN ' + m[1];
+        // Sometimes the backend emits "pAN 2.4.1" (prefixed AN). Normalize to canonical "AN 2.4.1".
+        m = t0.match(/^pAN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
+        if (m) return 'AN ' + m[1];
+        m = t0.match(/^AN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
+        if (m) return 'AN ' + m[1];
+        return t0;
+      }
+      function citeOpenButton(refInner, kind) {
+        const r = normalizeSuttaCiteRef(String(refInner || '').trim());
+        const safe = esc(r);
+        const a = escAttr(r);
+        const k = kind === 'commentary' ? 'commentary' : 'sutta';
+        /* <a> is valid inside <p>; <button> is often stripped by DOMPurify inside paragraphs */
+        return '<a href="#" class="cite cite-open" data-kind="' + k + '" data-ref="' + a + '">(' + safe + ')</a>';
+      }
+      function citeTokenToButton(token) {
+        const t = String(token || '').trim();
+        if (/^cAN\\s*\\d/i.test(t)) return citeOpenButton(t, 'commentary');
+        if (/^pAN\\s*\\d/i.test(t)) return citeOpenButton(normalizeSuttaCiteRef(t), 'sutta');
+        if (/^AN\\s*\\d/i.test(t)) return citeOpenButton(t, 'sutta');
+        return esc(t);
+      }
+      /** Split comma-separated refs inside one pair of parens so each (AN …)/(cAN …) is its own link. */
+      function citeParenGroup(innerRaw) {
+        const inner = String(innerRaw || '').trim();
+        if (!inner) return '()';
+        const parts = inner.split(',').map((x) => x.trim()).filter(Boolean);
+        if (parts.length === 1) {
+          const b = citeTokenToButton(parts[0]);
+          if (b.indexOf('<a ') === 0) return b;
+          return '(' + b + ')';
+        }
+        return '(' + parts.map(citeTokenToButton).join(', ') + ')';
+      }
+      function citeifyBareOutsideButtons(s) {
+        const str = String(s || '');
+        const low = str.toLowerCase();
+        let i = 0;
+        let out = '';
+        while (i < str.length) {
+          const iBtn = low.indexOf('<button', i);
+          const iA = low.indexOf('<a ', i);
+          let open = -1;
+          let closeTag = '';
+          if (iBtn >= 0 && (iA < 0 || iBtn <= iA)) {
+            open = iBtn;
+            closeTag = '</button>';
+          } else if (iA >= 0) {
+            open = iA;
+            closeTag = '</a>';
+          }
+          if (open === -1) {
+            out += _replaceBareCitations(str.slice(i));
+            break;
+          }
+          const gt = str.indexOf('>', open);
+          if (gt < 0) {
+            out += _replaceBareCitations(str.slice(i));
+            out += str.slice(open);
+            break;
+          }
+          const openTag = str.slice(open, gt + 1);
+          const isCite = openTag.indexOf('cite-open') >= 0;
+          if (!isCite) {
+            out += _replaceBareCitations(str.slice(i, open));
+            if (open === iBtn) {
+              out += str.slice(open, open + 7);
+              i = open + 7;
+            } else {
+              out += str.slice(open, open + 3);
+              i = open + 3;
+            }
+            continue;
+          }
+          out += _replaceBareCitations(str.slice(i, open));
+          const close = low.indexOf(closeTag, gt);
+          if (close === -1) {
+            out += str.slice(open);
+            break;
+          }
+          out += str.slice(open, close + closeTag.length);
+          i = close + closeTag.length;
+        }
+        return out;
+      }
+      function _replaceBareCitations(t) {
+        let x = String(t || '');
+        /* cAN before AN; optional space so AN1.5.8 matches like AN 1.5.8 */
+        x = x.replace(/\\b(cAN)\\s*(\\d+(?:\\.\\d+)*)\\b/gi, (_, __, nums) => citeOpenButton('cAN ' + nums, 'commentary'));
+        // Support both "AN 1.5.8" and "pAN 1.5.8" (seen in some generated text).
+        x = x.replace(/\\b(pAN|AN)\\s*(\\d+(?:\\.\\d+)*)\\b/gi, (_, __, nums) => citeOpenButton('AN ' + nums, 'sutta'));
+        return x;
+      }
+      function formatAsstAnswer(raw) {
+        let s = esc(raw ?? '');
+        /* [(] [)] = literal parens; split commas so (AN 1, AN 2) is not one mashed ref */
+        s = s.replace(/[(](cAN[^)]{0,400})[)]/gi, (_, g1) => citeParenGroup(g1));
+        s = s.replace(/[(](AN[^)]{0,400})[)]/g, (_, g1) => citeParenGroup(g1));
+        s = citeifyBareOutsideButtons(s);
+        return s;
+      }
+      function citeifyOutsideFences(raw) {
+        const parts = String(raw ?? '').split('```');
+        const out = [];
+        for (let i = 0; i < parts.length; i++) {
+          let chunk = parts[i];
+          if (i % 2 === 0) {
+            chunk = chunk.replace(/[(](cAN[^)]{0,400})[)]/gi, (_, g1) => citeParenGroup(g1));
+            chunk = chunk.replace(/[(](AN[^)]{0,400})[)]/g, (_, g1) => citeParenGroup(g1));
+            chunk = citeifyBareOutsideButtons(chunk);
+          }
+          out.push(chunk);
+        }
+        return out.join('```');
+      }
+      function safeMdHtml(html) {
+        if (typeof DOMPurify === 'undefined') return esc(String(html ?? ''));
+        return DOMPurify.sanitize(String(html ?? ''), {
+          ALLOWED_TAGS: ['p','br','ul','ol','li','strong','em','del','h1','h2','h3','h4','blockquote','a','pre','code','table','thead','tbody','tr','th','td','hr','small','span','button'],
+          ALLOWED_ATTR: ['href','title','class','colspan','rowspan','rel','target','type','data-kind','data-ref'],
+          // We rely on data-kind/data-ref to open the Reference panel from citations.
+          ALLOW_DATA_ATTR: true,
+        });
+      }
+      function renderMarkdown(raw) {
+        const src = String(raw ?? '');
+        if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+          return '<div class="md md-fallback">' + formatAsstAnswer(src) + '</div>';
+        }
+        const cited = citeifyOutsideFences(src);
+        let html;
+        try {
+          marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
+          html = marked.parse(cited);
+        } catch (e) {
+          html = '<p>' + esc(src) + '</p>';
+        }
+        return '<div class="md">' + safeMdHtml(html) + '</div>';
+      }
+
+      function linkifyCitationsInElement(rootEl) {
+        if (!rootEl) return;
+        const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+          acceptNode: (node) => {
+            try {
+              const p = node.parentElement;
+              if (!p) return NodeFilter.FILTER_REJECT;
+              if (p.closest('a, pre, code, textarea, button, script, style')) return NodeFilter.FILTER_REJECT;
+              const t = (node.nodeValue || '');
+              if (t.indexOf('AN') < 0 && t.indexOf('cAN') < 0 && t.indexOf('pAN') < 0) return NodeFilter.FILTER_REJECT;
+              if (t.indexOf('(') < 0 || t.indexOf(')') < 0) return NodeFilter.FILTER_REJECT;
+              return NodeFilter.FILTER_ACCEPT;
+            } catch {
+              return NodeFilter.FILTER_REJECT;
+            }
+          },
+        });
+
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+
+        const re = /\((cAN|pAN|AN)\s*\d+(?:\.\d+)*\)/gi;
+        for (const n of nodes) {
+          const text = n.nodeValue || '';
+          re.lastIndex = 0;
+          if (!re.test(text)) continue;
+          re.lastIndex = 0;
+          const frag = document.createDocumentFragment();
+          let last = 0;
+          let m;
+          while ((m = re.exec(text)) !== null) {
+            const start = m.index;
+            const end = re.lastIndex;
+            if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
+
+            const inner = text.slice(start + 1, end - 1);
+            const norm = normalizeSuttaCiteRef(inner);
+            const kind = norm.toLowerCase().startsWith('can ') ? 'commentary' : 'sutta';
+            const a = document.createElement('a');
+            a.href = '#';
+            a.className = 'cite cite-open';
+            a.setAttribute('data-kind', kind);
+            a.setAttribute('data-ref', norm);
+            a.textContent = '(' + norm + ')';
+            frag.appendChild(a);
+
+            last = end;
+          }
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          n.parentNode.replaceChild(frag, n);
+        }
+      }
+      function attachCodeCopyButtons(rootEl) {
+        rootEl.querySelectorAll('.md pre').forEach((pre) => {
+          if (pre.closest('.preWrap')) return;
+          const wrap = document.createElement('div');
+          wrap.className = 'preWrap';
+          const parent = pre.parentNode;
+          parent.insertBefore(wrap, pre);
+          wrap.insertBefore(pre, wrap.firstChild);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'codeCopy';
+          btn.textContent = 'Copy';
+          btn.addEventListener('click', () => {
+            const code = pre.querySelector('code');
+            const t = (code ? code.innerText : pre.innerText) || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(t).catch(() => {});
+            }
+          });
+          wrap.appendChild(btn);
+        });
+      }
+      function setChatStatus(s) { chatStatusEl.textContent = s || ''; }
+      function setIdxStatus(s) { idxStatusEl.textContent = s || ''; }
+
+      let selectedId = null;
+      let activeConversationId = null;
+      let chat = [];
+      let lastUserQuestion = '';
+      let askAbort = null;
+      let askBusy = false;
+
+      function clearChatUi() {
+        chat = [];
+        lastUserQuestion = '';
+        if (chatLogEl) chatLogEl.innerHTML = '';
+        if (regenBtn) regenBtn.disabled = true;
+      }
+
+      function resizeComposer() {
+        if (!qEl) return;
+        qEl.style.height = 'auto';
+        qEl.style.height = Math.min(qEl.scrollHeight, 180) + 'px';
+      }
+
+      function setComposerBusy(busy) {
+        askBusy = busy;
+        if (askBtn) askBtn.disabled = busy;
+        if (stopAskBtn) stopAskBtn.style.display = busy ? 'inline-block' : 'none';
+        if (regenBtn) regenBtn.disabled = !lastUserQuestion || busy;
+        if (rebuildBtn) rebuildBtn.disabled = busy;
+      }
+
+      function removeLastUserMessage() {
+        if (!chat.length) return;
+        const last = chat[chat.length - 1];
+        if (last.role !== 'user') return;
+        chat.pop();
+        const nodes = chatLogEl.querySelectorAll('.msg.user');
+        const lastNode = nodes[nodes.length - 1];
+        if (lastNode) lastNode.remove();
+      }
+
+      function appendMsg(role, text, meta) {
+        if (!chatLogEl) return;
+        const id = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+        chat.push({ id, role, text, meta: meta || null, rating: 0 });
+        const wrap = document.createElement('div');
+        wrap.className = 'msg ' + (role === 'user' ? 'user' : 'asst');
+        const b = document.createElement('div');
+        b.className = 'bubble' + ((meta && meta.error) ? ' bubbleErr' : '');
+        if (role === 'user') {
+          b.textContent = text || '';
+        } else {
+          b.innerHTML = renderMarkdown(text || '');
+          linkifyCitationsInElement(b);
+          attachCodeCopyButtons(b);
+        }
+        wrap.appendChild(b);
+        if (role !== 'user') {
+          const footer = document.createElement('div');
+          footer.className = 'msgFooter';
+          const lat = (meta && meta.latency_ms != null) ? Math.round(Number(meta.latency_ms)) : null;
+          if (lat != null && !Number.isNaN(lat)) {
+            const latEl = document.createElement('span');
+            latEl.className = 'muted small';
+            latEl.textContent = lat + ' ms';
+            latEl.style.marginRight = '6px';
+            footer.appendChild(latEl);
+          }
+          const copyWhole = document.createElement('button');
+          copyWhole.type = 'button';
+          copyWhole.className = 'thumb';
+          copyWhole.textContent = 'Copy';
+          copyWhole.title = 'Copy full answer';
+          copyWhole.addEventListener('click', () => {
+            const t = text || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(t).catch(() => {});
+            }
+          });
+          footer.appendChild(copyWhole);
+
+          if (meta && meta.error && meta.retryQuestion) {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'thumb';
+            retry.textContent = 'Retry';
+            retry.addEventListener('click', () => {
+              wrap.remove();
+              chat = chat.filter((m) => m.id !== id);
+              void askWithQuestion(meta.retryQuestion, { fromInput: false });
+            });
+            footer.appendChild(retry);
+          }
+
+          const spacer = document.createElement('div');
+          spacer.style.flex = '1';
+          footer.appendChild(spacer);
+
+          if (!(meta && meta.error)) {
+            const up = document.createElement('button');
+            up.type = 'button';
+            up.className = 'thumb';
+            up.textContent = '👍';
+            const down = document.createElement('button');
+            down.type = 'button';
+            down.className = 'thumb';
+            down.textContent = '👎';
+
+            function setRating(r) {
+              chat = chat.map((m) => (m.id === id ? { ...m, rating: r } : m));
+              up.classList.toggle('active', r === 1);
+              down.classList.toggle('active', r === -1);
+              fetchJson('/api/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  message_id: id,
+                  rating: r,
+                  question: (meta && meta.question) || '',
+                  answer: text || '',
+                  sources: (meta && meta.sources) || [],
+                }),
+              }).catch(() => {});
+            }
+            up.addEventListener('click', () => setRating(1));
+            down.addEventListener('click', () => setRating(-1));
+            footer.appendChild(up);
+            footer.appendChild(down);
+          }
+
+          b.appendChild(footer);
+        }
+        chatLogEl.appendChild(wrap);
+        chatLogEl.scrollTop = chatLogEl.scrollHeight;
+      }
+
+      function hydrateChatFromHistory(items) {
+        chatLogEl.innerHTML = '';
+        chat = [];
+        lastUserQuestion = '';
+        const ordered = (items || []).slice();
+        for (let i = 0; i < ordered.length; i++) {
+          const row = ordered[i];
+          const q = (row.q != null) ? String(row.q) : '';
+          const a = (row.a != null) ? String(row.a) : '';
+          if (!q.trim() && !a.trim()) continue;
+          if (q.trim()) appendMsg('user', q, null);
+          appendMsg('asst', a.trim() ? a : '(no answer)', {
+            question: q,
+            sources: [],
+            latency_ms: row.latency_ms != null ? Math.round(Number(row.latency_ms)) : null,
+          });
+        }
+        if (ordered.length) {
+          const last = ordered[ordered.length - 1];
+          lastUserQuestion = (last.q != null) ? String(last.q).trim() : '';
+        }
+        regenBtn.disabled = !lastUserQuestion || askBusy;
+        chatLogEl.scrollTop = chatLogEl.scrollHeight;
+      }
+
+      async function fetchJson(url, opts) {
+        const o = Object.assign({ cache: 'no-store' }, opts || {});
+        if (window.__DAMA_SEND_CREDENTIALS) {
+          o.credentials = 'include';
+        }
+        if (window.__DAMA_FIREBASE_REQUIRED && window.firebase && firebase.auth().currentUser) {
+          try {
+            const t = await firebase.auth().currentUser.getIdToken();
+            o.headers = Object.assign({}, o.headers || {}, { Authorization: 'Bearer ' + t });
+          } catch (e) {}
+        }
+        const res = await fetch(url, o);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const d = data.detail;
+          const msg = typeof d === 'string' ? d : JSON.stringify(d || data);
+          throw new Error(msg || res.statusText);
+        }
+        return data;
+      }
+
+      async function postPedagogy(kind, payload) {
+        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) return;
+        try {
+          await fetchJson('/api/pedagogy/event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: String(kind || 'event').slice(0, 128), payload: payload || {} }),
+          });
+        } catch (e) {
+          /* optional analytics */
+        }
+      }
+
+      async function syncAccountMe() {
+        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) return;
+        try {
+          const me = await fetchJson('/api/auth/me');
+          window.__damaAccount = me;
+        } catch (e) {
+          /* open chat or not logged in */
+        }
+      }
+
+      async function boot() {
+        try {
+          await syncAccountMe();
+          await refreshIndexStatus();
+          await refreshConversationList();
+        } catch (e) {
+          setChatStatus('Startup: ' + (e && e.message ? e.message : e));
+        }
+      }
+
+      async function refreshIndexStatus() {
+        try {
+          const data = await fetchJson('/api/index_status');
+          const mode = (data.mode || '').toString();
+          const brandEl = document.getElementById('brandName');
+          if (brandEl) {
+            brandEl.textContent = mode === 'vertex' ? 'Dama — Vertex (AN1+AN2)' : 'Dama — local (AN1+AN2)';
+          }
+          const n1 = Number(data.count) || 0;
+          const n2 = Number(data.an2_count) || 0;
+          const v1 = data.vertex_an1_chunks != null ? Number(data.vertex_an1_chunks) : null;
+          const v2 = data.vertex_an2_chunks != null ? Number(data.vertex_an2_chunks) : null;
+          const line =
+            mode === 'vertex'
+              ? (data.exists
+                  ? (v1 != null && v2 != null && (v1 > 0 || v2 > 0)
+                      ? ('Vertex · ' + n1 + ' chunks (AN1: ' + v1 + ' · AN2: ' + v2 + ')')
+                      : ('Vertex · ' + n1 + ' chunks'))
+                  : 'Vertex corpus missing')
+              : 'AN1: ' + n1 + ' · AN2: ' + n2 + (mode ? ' · ' + mode : '');
+          setIdxStatus(line);
+          const tip = [
+            data.build,
+            data.mode,
+            data.embedding_model,
+            data.manifest_gcs,
+            data.manifest_path,
+            data.manifest_shard_count != null ? 'shards: ' + data.manifest_shard_count : '',
+            data.bundle_gcs,
+            data.bundle_path,
+            data.error,
+            data.an1_path,
+            data.an2_path,
+            data.persist_dir,
+            data.persist_an2_dir,
+            data.vertex_note,
+          ]
+            .filter(Boolean)
+            .join('\\n');
+          idxStatusEl.title = tip || '';
+        } catch {
+          setIdxStatus('unknown');
+          idxStatusEl.title = '';
+        }
+      }
+
+      async function refreshConversationList() {
+        try {
+          const data = await fetchJson('/api/conversations');
+          const rows = data.conversations || [];
+          convListEl.innerHTML = '';
+          if (!rows.length) {
+            convListEl.innerHTML = '<div class="muted small">No saved chats yet.</div>';
+            return;
+          }
+          for (const row of rows) {
+            const id = (row.id || '').toString();
+            const title = esc((row.title || 'Chat').toString());
+            const ts = row.updated_ts != null ? Number(row.updated_ts) : 0;
+            const tstr = ts ? new Date(ts).toLocaleString() : '';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'convItem' + (activeConversationId && id.toLowerCase() === activeConversationId.toLowerCase() ? ' active' : '');
+            btn.innerHTML = '<div class="t">' + title + '</div><div class="d">' + esc(tstr) + '</div>';
+            btn.addEventListener('click', () => void selectConversation(id));
+            convListEl.appendChild(btn);
+          }
+        } catch {
+          convListEl.innerHTML = '<div class="muted small">Could not load chat list.</div>';
+        }
+      }
+
+      async function loadConversationMessages(conversationId, opts) {
+        opts = opts || {};
+        const hydrate = !!opts.hydrateChat;
+        try {
+          const bust = '_=' + Date.now();
+          const data = await fetchJson('/api/conversations/' + encodeURIComponent(conversationId) + '/messages?' + bust);
+          const items = data.items || [];
+          if (hydrate) hydrateChatFromHistory(items);
+        } catch {
+          if (hydrate) hydrateChatFromHistory([]);
+        }
+      }
+
+      async function selectConversation(conversationId) {
+        activeConversationId = conversationId;
+        convPanelHint.textContent = 'Active: ' + (conversationId || '').slice(0, 8) + '…';
+        await loadConversationMessages(conversationId, { hydrateChat: true });
+        await refreshConversationList();
+      }
+
+      function startNewConversation() {
+        clearChatUi();
+        activeConversationId = null;
+        convPanelHint.textContent = 'New thread — saves after a reply';
+        void refreshConversationList();
+      }
+
+      function applyReadingFromDetail(data, suttaidForMeta) {
+        readingEmptyEl.style.display = 'none';
+        readingBodyEl.style.display = 'block';
+        const sid = (suttaidForMeta || (data.suttaid || '')).toString().trim();
+        const cid = (data.commentary_id || '').toString().trim();
+        selectedId = sid;
+        _activeCommentaryId = cid || '';
+        setCommAudioStatus('');
+        _syncCommAudioButtons('idle');
+        readingMetaEl.textContent = cid ? ('suttaid: ' + sid + ' · commentary_id: ' + cid) : ('suttaid: ' + sid);
+        suttaRaw = data.sutta != null ? String(data.sutta) : '';
+        renderSuttaReading(suttaTextEl, suttaRaw);
+        const commRaw = (data.commentry != null && String(data.commentry).trim()) ? data.commentry : '(no commentary)';
+        commTextEl.textContent = commRaw;
+        const ch = data.chain != null ? data.chain : null;
+        const hasChain = ch && typeof ch === 'object' && (Array.isArray(ch.items) ? ch.items.length > 0 : Object.keys(ch).length > 0);
+        // #region agent log
+        __agentDbg('H2', 'an1_app.py:inline_js:applyReadingFromDetail', 'Applied reference detail', {
+          sid: sid,
+          cid: cid,
+          suttaLen: suttaRaw ? String(suttaRaw).length : 0,
+          commLen: commRaw ? String(commRaw).length : 0,
+          commTail: commRaw ? String(commRaw).slice(-80) : '',
+          chainType: ch === null ? 'null' : typeof ch,
+          chainKeys: (ch && typeof ch === 'object' && !Array.isArray(ch)) ? Object.keys(ch).slice(0, 12) : [],
+          chainItemsLen: (ch && typeof ch === 'object' && Array.isArray(ch.items)) ? ch.items.length : null,
+          hasChain: !!hasChain,
+          refModeRowDisplay: refModeRow ? refModeRow.style.display : null,
+        });
+        // #endregion agent log
+        // Always show Sutta/Links tabs once a reference is loaded.
+        // If there is no chain, Links will show "(no chain for this discourse)".
+        if (refModeRow) refModeRow.style.display = 'flex';
+        renderChainVisual(hasChain ? ch : null);
+        setRefMode(getRefMode());
+      }
+
+      async function openReadingFromCitation(kind, ref) {
+        const r = (ref || '').trim();
+        if (!r) return;
+        void postPedagogy('citation_open', { kind: kind, ref: r });
+        // #region agent log
+        __agentDbg('H3', 'an1_app.py:inline_js:openReadingFromCitation', 'Open reference from citation', { kind: kind, ref: r });
+        // #endregion agent log
+        suttaRaw = '';
+        lastSuttaParagraphMeta = null;
+        suttaTextEl.classList.remove('prose');
+        suttaTextEl.textContent = '';
+        commTextEl.textContent = '';
+        try {
+          let data;
+          if (kind === 'commentary') {
+            data = await fetchJson('/api/item_by_commentary_id/' + encodeURIComponent(r));
+          } else {
+            data = await fetchJson('/api/item/' + encodeURIComponent(r));
+          }
+          const sidMeta = (data.suttaid || '').toString().trim() || normalizeSuttaCiteRef(r);
+          applyReadingFromDetail(data, sidMeta);
+        } catch (e) {
+          // #region agent log
+          __agentDbg('H4', 'an1_app.py:inline_js:openReadingFromCitation', 'Open reference failed', {
+            kind: kind,
+            ref: r,
+            error: (e && e.message) ? String(e.message) : String(e),
+          });
+          // #endregion agent log
+          readingEmptyEl.style.display = 'none';
+          readingBodyEl.style.display = 'block';
+          suttaRaw = '';
+          lastSuttaParagraphMeta = null;
+          suttaTextEl.classList.remove('prose');
+          suttaTextEl.textContent = 'Could not load: ' + (e?.message || e);
+          commTextEl.textContent = '';
+          renderChainVisual(null);
+        }
+      }
+
+      async function rebuild() {
+        rebuildBtn.disabled = true;
+        setChatStatus('Rebuilding index…');
+        try {
+          const data = await fetchJson('/api/build?book=all', { method: 'POST' });
+          setChatStatus('Index rebuilt · collection_count=' + data.collection_count);
+        } catch (e) {
+          setChatStatus('Rebuild error: ' + (e?.message || e));
+        }
+        await refreshIndexStatus();
+        rebuildBtn.disabled = false;
+      }
+
+      async function ask() {
+        if (!qEl) return;
+        const question = (qEl.value || '').trim();
+        if (!question) return;
+        await askWithQuestion(question, { fromInput: true });
+      }
+
+      async function askWithQuestion(question, opts) {
+        opts = opts || {};
+        const fromInput = !!opts.fromInput;
+        if (!question || askBusy) return;
+        if (fromInput && !qEl) return;
+        if (fromInput) primeGongAudioFromUserGesture();
+        askAbort = new AbortController();
+        setComposerBusy(true);
+        quotesEl.innerHTML = '';
+        setChatStatus('Searching…');
+        if (fromInput) {
+          appendMsg('user', question);
+          qEl.value = '';
+          resizeComposer();
+        }
+        lastUserQuestion = question;
+        const t0 = performance.now();
+        try {
+          // #region agent log
+          __agentDbg('H6', 'an1_app.py:inline_js:askWithQuestion', 'Sending /api/query', {
+            body: { question: question, book: 'all', use_llm: false, k: 8 },
+          });
+          // #endregion agent log
+          const data = await fetchJson('/api/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // Default to retrieval-only so Cloud Run works without Ollama.
+            // LLM mode can be re-enabled later via explicit UI toggle / env-backed config.
+            body: JSON.stringify({ question, book: 'all', use_llm: false, k: 8 }),
+            signal: askAbort.signal,
+          });
+          const latencyMs = Math.round(performance.now() - t0);
+          setChatStatus('Done · ' + latencyMs + ' ms');
+          const chunks = data.chunks || [];
+          const sidKinds = [];
+          for (const c of chunks) {
+            const sid = (c.suttaid || '').toString().trim();
+            const kind = (c.kind || '').toString().trim() || 'unknown';
+            const cid = (c.commentary_id || '').toString().trim();
+            if (!sid) continue;
+            const key = sid + ':' + kind + (cid ? ':' + cid : '');
+            if (!sidKinds.includes(key)) sidKinds.push(key);
+          }
+          const rawAnswer = data.answer != null ? String(data.answer) : '';
+          const answerTrim = rawAnswer.trim();
+          let answerText = answerTrim;
+          if (!answerText) {
+            // Retrieval-only mode: synthesize a readable summary from top chunks.
+            const top = (chunks || []).slice(0, 6);
+            if (top.length) {
+              const lines = [
+                'Retrieval results (no LLM):',
+                '',
+              ];
+              for (const c of top) {
+                const sid = (c.suttaid || '').toString().trim();
+                const cid = (c.commentary_id || '').toString().trim();
+                const kind = ((c.kind || '').toString().trim() || 'unknown').toLowerCase();
+                const numsFrom = (s) => {
+                  const m = String(s || '').match(/(\d+(?:\.\d+)*)/);
+                  return m ? m[1] : '';
+                };
+                const sidNums = numsFrom(sid);
+                const cidNums = numsFrom(cid);
+                // Ensure citations include the "AN"/"cAN" prefix so they become clickable links
+                // via citeifyOutsideFences() even when retrieval-only synthesizes the answer.
+                const cite = kind === 'commentary'
+                  ? ('cAN ' + (cidNums || sidNums || '').trim())
+                  : ('AN ' + (sidNums || '').trim());
+                const snippet = (c.text || '').toString().replace(/\s+/g, ' ').trim().slice(0, 220);
+                lines.push('- ' + snippet + (cite ? (' (' + cite + ')') : ''));
+              }
+              answerText = lines.join('\\n');
+            } else {
+              answerText = '(no answer)';
+            }
+          }
+          // #region agent log
+          __agentDbg('H8', 'an1_app.py:inline_js:askWithQuestion', 'Render answer fallback', {
+            hadServerAnswer: !!answerTrim,
+            chunks: (chunks || []).length,
+            answerLen: answerText.length,
+          });
+          // #endregion agent log
+          appendMsg('asst', answerText, { question, sources: sidKinds, latency_ms: latencyMs });
+          playPing();
+          const worthSaving = answerText.trim().length > 0 && answerText.trim() !== '(no answer)';
+          if (worthSaving) {
+            try {
+              let cid = activeConversationId;
+              if (!cid) {
+                const cdata = await fetchJson('/api/conversations', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ title: '' }),
+                });
+                cid = cdata.id;
+                activeConversationId = cid;
+                convPanelHint.textContent = 'New thread';
+              }
+              await fetchJson('/api/conversations/' + encodeURIComponent(cid) + '/messages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, answer: answerText.trim(), latency_ms: latencyMs }),
+              });
+              await refreshConversationList();
+              void postPedagogy('query_turn', {
+                conversation_id: cid,
+                latency_ms: latencyMs,
+                q_len: question.length,
+                a_len: answerText.trim().length,
+              });
+            } catch (e) {
+              /* persistence optional */
+            }
+          }
+          quotesEl.innerHTML = '';
+        } catch (e) {
+          // #region agent log
+          __agentDbg('H7', 'an1_app.py:inline_js:askWithQuestion', 'Request failed', {
+            error: (e && e.message) ? String(e.message) : String(e),
+          });
+          // #endregion agent log
+          const latencyMs = Math.round(performance.now() - t0);
+          const aborted = e && (e.name === 'AbortError' || String(e.message || '').toLowerCase().includes('abort'));
+          if (aborted) {
+            setChatStatus('Cancelled');
+            if (fromInput) {
+              removeLastUserMessage();
+              qEl.value = question;
+              resizeComposer();
+            }
+          } else {
+            setChatStatus('Error after ' + latencyMs + ' ms: ' + (e && e.message ? e.message : e));
+            appendMsg('asst', '**Request failed**\\n\\n' + (e && e.message ? e.message : String(e)), {
+              error: true,
+              question,
+              retryQuestion: question,
+              latency_ms: latencyMs,
+            });
+          }
+        } finally {
+          askAbort = null;
+          setComposerBusy(false);
+        }
+      }
+
+      async function regenerateLast() {
+        if (!lastUserQuestion || askBusy) return;
+        await askWithQuestion(lastUserQuestion, { fromInput: false });
+      }
+
+      if (rebuildBtn) rebuildBtn.addEventListener('click', rebuild);
+      if (askBtn) askBtn.addEventListener('click', ask);
+      window.__damaAsk = ask;
+      if (stopAskBtn) {
+        stopAskBtn.addEventListener('click', () => {
+          if (askAbort) askAbort.abort();
+        });
+      }
+      if (regenBtn) regenBtn.addEventListener('click', () => void regenerateLast());
+      if (qEl) {
+        qEl.addEventListener('input', () => resizeComposer());
+        qEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            ask();
+          }
+        });
+      }
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          void refreshConversationList();
+        }
+      });
+
+      newConvBtn.addEventListener('click', () => startNewConversation());
+
+      chatLogEl.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('.cite-open');
+        if (!btn || !chatLogEl.contains(btn)) return;
+        const kind = (btn.getAttribute('data-kind') || 'sutta').toString();
+        const ref = (btn.getAttribute('data-ref') || '').toString();
+        if (!ref) return;
+        ev.preventDefault();
+        void openReadingFromCitation(kind, ref);
+      });
+
+      async function playMappedCommentaryAudio() {
+        const key = String(_activeCommentaryId || '').trim();
+        if (!key) {
+          setCommAudioStatus('No commentary id loaded.');
+          return;
+        }
+
+        const map = await loadAudioMapOnce();
+        const row = map ? map[key] : null;
+        if (!row || typeof row !== 'object') {
+          setCommAudioStatus('No audio boundary mapped for ' + key + ' yet.');
+          return;
+        }
+        const file = String(row.file || '').trim();
+        const startS = Number(row.start_s);
+        const endS = Number(row.end_s);
+        if (!file || !Number.isFinite(startS) || !Number.isFinite(endS) || endS <= startS) {
+          setCommAudioStatus('Invalid audio mapping for ' + key + '.');
+          return;
+        }
+
+        if (!_commAudio) {
+          _commAudio = new Audio();
+          _commAudio.preload = 'auto';
+          _commAudio.addEventListener('play', () => _syncCommAudioButtons('playing'));
+          _commAudio.addEventListener('pause', () => {
+            if (_commAudioSeg) _syncCommAudioButtons('paused');
+          });
+          _commAudio.addEventListener('ended', () => _syncCommAudioButtons('idle'));
+        }
+        // Sync volume from the always-visible slider.
+        try {
+          if (commAudioVolEl) {
+            const v = Number(commAudioVolEl.value);
+            if (Number.isFinite(v)) _commAudio.volume = Math.min(Math.max(v, 0), 1);
+          }
+        } catch (e) {}
+
+        const src = '/aud/' + encodeURIComponent(file).replace(/%2F/g, '/');
+        const mustLoad = !_commAudioSeg || _commAudioSeg.key !== key || _commAudioSeg.file !== file;
+        _commAudioSeg = { key, file, start_s: startS, end_s: endS };
+
+        setCommAudioStatus('Loading audio…');
+        _installBoundaryEnforcer();
+        _syncCommAudioUi();
+
+        if (mustLoad) {
+          try {
+            _commAudio.pause();
+          } catch (e) {}
+          _commAudio.src = src;
+        }
+
+        const seekAndPlay = async () => {
+          try {
+            _commAudio.currentTime = Math.max(0, startS);
+          } catch (e) {}
+          try {
+            await _commAudio.play();
+            setCommAudioStatus(key + ' · ' + startS.toFixed(2) + 's → ' + endS.toFixed(2) + 's');
+            _syncCommAudioUi();
+          } catch (e) {
+            setCommAudioStatus('Audio play blocked by browser. Click once anywhere, then try again.');
+          }
+        };
+
+        if (_commAudio.readyState >= 1) {
+          await seekAndPlay();
+        } else {
+          _commAudio.addEventListener('loadedmetadata', () => { void seekAndPlay(); }, { once: true });
+          _commAudio.addEventListener('error', () => {
+            setCommAudioStatus('Failed to load audio file. Check filename in audio_map.json.');
+            _stopCommAudioInternal({ quiet: true });
+          }, { once: true });
+        }
+      }
+
+      if (commAudioPlayBtn) commAudioPlayBtn.addEventListener('click', () => void playMappedCommentaryAudio());
+      if (commAudioPauseBtn) commAudioPauseBtn.addEventListener('click', () => {
+        try { if (_commAudio) _commAudio.pause(); } catch (e) {}
+      });
+      if (commAudioStopBtn) commAudioStopBtn.addEventListener('click', () => {
+        _stopCommAudioInternal({ quiet: false });
+        setCommAudioStatus('Stopped.');
+      });
+
+      // Always-visible controls
+      if (commAudioVolEl) {
+        commAudioVolEl.addEventListener('input', () => {
+          try {
+            if (_commAudio) _commAudio.volume = Math.min(Math.max(Number(commAudioVolEl.value), 0), 1);
+          } catch (e) {}
+        });
+      }
+      if (commAudioSeekEl) {
+        const beginSeek = () => { _commAudioUserSeeking = true; };
+        const endSeek = () => { _commAudioUserSeeking = false; };
+        commAudioSeekEl.addEventListener('pointerdown', beginSeek);
+        commAudioSeekEl.addEventListener('pointerup', endSeek);
+        commAudioSeekEl.addEventListener('pointercancel', endSeek);
+        commAudioSeekEl.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') _commAudioUserSeeking = true;
+        });
+        commAudioSeekEl.addEventListener('keyup', () => { _commAudioUserSeeking = false; });
+        commAudioSeekEl.addEventListener('input', () => {
+          try {
+            if (!_commAudio || !_commAudioSeg) return;
+            const startS = Number(_commAudioSeg.start_s);
+            const endS = Number(_commAudioSeg.end_s);
+            let v = Number(commAudioSeekEl.value);
+            if (!Number.isFinite(v)) return;
+            v = Math.min(Math.max(v, startS), endS);
+            _commAudio.currentTime = v;
+            _syncCommAudioUi();
+          } catch (e) {}
+        });
+      }
+
+      function getProfileName() {
+        try {
+          return (localStorage.getItem(PROFILE_KEY) || '').trim();
+        } catch (e) {
+          return '';
+        }
+      }
+
+      function greetLabelFromAccount() {
+        const acc = window.__damaAccount || {};
+        const dn = (acc.display_name || '').trim();
+        const un = (acc.username || '').trim();
+        const em = (acc.email || '').trim();
+        const fallback = getProfileName();
+        let raw = dn || un || em || fallback || '';
+        if (raw.includes('@')) raw = raw.split('@')[0];
+        return raw.slice(0, 48);
+      }
+
+      function syncProfileGreet() {
+        const n = greetLabelFromAccount();
+        profileGreet.textContent = n ? ('Hello, ' + n) : '';
+      }
+
+      window.__damaSyncGreet = syncProfileGreet;
+
+      async function loadProfileActivity() {
+        const el = document.getElementById('profileActivity');
+        if (!el) return;
+        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) {
+          el.textContent = 'Sign in to see pedagogy activity.';
+          return;
+        }
+        el.textContent = 'Loading…';
+        try {
+          const data = await fetchJson('/api/pedagogy/events?limit=15');
+          const rows = data.events || [];
+          if (!rows.length) {
+            el.textContent = 'No events yet — thumbs and study actions are logged here.';
+            return;
+          }
+          el.innerHTML = rows
+            .map(function (r) {
+              const t = new Date((r.ts || 0) * 1000).toLocaleString();
+              const k = esc(String(r.kind || ''));
+              return (
+                '<div style="margin:4px 0;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:4px">' +
+                esc(t) +
+                ' · <strong>' +
+                k +
+                '</strong></div>'
+              );
+            })
+            .join('');
+        } catch (e) {
+          el.textContent = 'Could not load activity.';
+        }
+      }
+
+      function openProfileModal() {
+        const acc = window.__damaAccount || {};
+        profileNameInput.value =
+          (acc.display_name != null && String(acc.display_name).trim() !== ''
+            ? String(acc.display_name).trim()
+            : '') || getProfileName();
+        void loadProfileActivity();
+        profileBackdrop.classList.add('open');
+        profileNameInput.focus();
+      }
+
+      function closeProfileModal() {
+        profileBackdrop.classList.remove('open');
+      }
+
+      function initProfileChrome() {
+        syncProfileGreet();
+        profileBtn.addEventListener('click', () => openProfileModal());
+        profileBackdrop.addEventListener('click', (ev) => {
+          if (ev.target === profileBackdrop) closeProfileModal();
+        });
+        profileSave.addEventListener('click', () => {
+          void (async () => {
+            const v = (profileNameInput.value || '').trim().slice(0, 128);
+            try {
+              if (v) localStorage.setItem(PROFILE_KEY, v);
+              else localStorage.removeItem(PROFILE_KEY);
+            } catch (e) {}
+            if (window.__DAMA_DIY_AUTH) {
+              try {
+                await fetchJson('/api/auth/profile', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ display_name: v }),
+                });
+                await syncAccountMe();
+              } catch (e) {
+                setChatStatus('Could not save profile: ' + (e && e.message ? e.message : e));
+              }
+            } else {
+              window.__damaAccount = Object.assign({}, window.__damaAccount || {}, { display_name: v || null });
+            }
+            syncProfileGreet();
+            closeProfileModal();
+          })();
+        });
+        profileSignOut.addEventListener('click', () => {
+          try {
+            localStorage.removeItem(PROFILE_KEY);
+          } catch (e) {}
+          profileNameInput.value = '';
+          window.__damaAccount = null;
+          syncProfileGreet();
+          closeProfileModal();
+          if (window.__DAMA_DIY_AUTH) {
+            fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+              .then(function() { window.location.href = '/'; })
+              .catch(function() { window.location.href = '/'; });
+            return;
+          }
+          if (window.__DAMA_FIREBASE_REQUIRED && window.firebase) {
+            firebase.auth().signOut().then(function() {
+              window.location.href = '/';
+            }).catch(function() {
+              window.location.href = '/';
+            });
+          }
+        });
+        document.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Escape' && profileBackdrop.classList.contains('open')) {
+            ev.preventDefault();
+            closeProfileModal();
+          }
+        });
+      }
+
+      function readPanelClamp(w) {
+        const max = Math.min(Math.floor(window.innerWidth * 0.72), 980);
+        const min = 240;
+        let n = Math.round(Number(w) || 420);
+        if (!Number.isFinite(n)) n = 420;
+        return Math.min(Math.max(n, min), max);
+      }
+
+      function applyReadPanelWidth(px) {
+        const w = readPanelClamp(px);
+        readingCol.style.width = w + 'px';
+        readingCol.style.flex = '0 0 ' + w + 'px';
+        try {
+          localStorage.setItem('an1_read_px', String(w));
+        } catch (e) {}
+      }
+
+      function clearReadPanelCustomWidth() {
+        readingCol.style.width = '';
+        readingCol.style.flex = '';
+        try {
+          localStorage.removeItem('an1_read_px');
+        } catch (e) {}
+      }
+
+      function applyConvCollapsed(collapsed) {
+        convCol.classList.toggle('collapsed', !!collapsed);
+        convToggleBtn.textContent = collapsed ? '»' : '«';
+        convToggleBtn.title = collapsed ? 'Expand past chats' : 'Collapse past chats';
+        try {
+          localStorage.setItem('an1_conv_collapsed', collapsed ? '1' : '0');
+        } catch (e) {}
+      }
+
+      function initLayoutChrome() {
+        let rw = NaN;
+        try {
+          const s = localStorage.getItem('an1_read_px');
+          if (s) rw = parseInt(s, 10);
+        } catch (e) {}
+        if (Number.isFinite(rw) && rw > 0) {
+          applyReadPanelWidth(rw);
+        } else {
+          clearReadPanelCustomWidth();
+        }
+        try {
+          applyConvCollapsed(localStorage.getItem('an1_conv_collapsed') === '1');
+        } catch (e) {}
+
+        convToggleBtn.addEventListener('click', () => {
+          applyConvCollapsed(!convCol.classList.contains('collapsed'));
+        });
+
+        readGrip.addEventListener('mousedown', (e) => {
+          if (window.innerWidth <= 900) return;
+          e.preventDefault();
+          const startX = e.clientX;
+          const startW = readingCol.getBoundingClientRect().width;
+          mainLayout.classList.add('resizing');
+          function onMove(ev) {
+            const dx = ev.clientX - startX;
+            applyReadPanelWidth(startW - dx);
+          }
+          function onUp() {
+            mainLayout.classList.remove('resizing');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          }
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+
+        window.addEventListener('resize', () => {
+          if (window.innerWidth <= 900) return;
+          try {
+            if (!localStorage.getItem('an1_read_px')) return;
+          } catch (e) {
+            return;
+          }
+          applyReadPanelWidth(readingCol.getBoundingClientRect().width);
+        });
+      }
+
+      if (refModeSuttaBtn) refModeSuttaBtn.addEventListener('click', () => setRefMode('sutta'));
+      if (refModeLinksBtn) refModeLinksBtn.addEventListener('click', () => setRefMode('links'));
+      syncUiHints();
+      setRefMode(getRefMode());
+
+      initProfileChrome();
+      initLayoutChrome();
+      window.__damaChatBoot = function() { void boot(); };
+      if (!window.__DAMA_FIREBASE_REQUIRED) {
+        window.__damaChatBoot();
+      }
+    </script>
+  </body>
+</html>

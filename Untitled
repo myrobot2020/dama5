@@ -1,0 +1,22 @@
+[
+  {
+    "suttaid": "AN 3.2.12",
+    "sutta": "3.2.12 buddha said monks these three things must be born in mind so long as he lives by a raja a duly anointed ruler what three the first is the place where the raja the duly anointed ruler was born then again monks the second thing he must bear in mind so long as he lives is the place where he was anointed that means where he was crown king then again monks the third thing he must bear in mind so long as he lives is the place where he won a battle the place which he occupies as conqueror in the fight these are the three things in like manner monks these three things must be born in mind by a monk so long as he lives what three the place where he got his hair and beard shaved off dawn the saffron ropes and went forth a wanderer from home to the homeless life this is the first thing he must bear in mind so long as he lives then again monks the second thing he must bear in mind is the place where he realized as it really is the meaning of this is ill or this dukkha this is the rising of dukkha this is the seizing of duka this is the practice that leads to the ending of dukkha then again monks the third thing he must bear in mind so long as he lives is the place where by the destruction of the asavas he himself in this very life came to know thoroughly deliberation by mind and liberation by wisdom that is without asavas and having attained it abides therein these three things monks must be born in mind by a monk so long as he lives this uttar.",
+    "commentry": "basically only concerns monks and i've read it basically for monks and that these three things that monk must always remember where he went forth as a monk the second one where he understood the four uh uh aryan truths the basics of the aryan truths that means he entered the stream and the third one is where he became an arahant",
+    "commentary_id": "cAN 3.2.12",
+    "chain": {
+      "items": [
+        "place of going forth",
+        "place of understanding the four noble truths",
+        "place of destruction of asavas"
+      ],
+      "count": 3,
+      "is_ordered": true,
+      "category": "milestones"
+    },
+    "an_book": 3,
+    "sc_uid": "an3.112",
+    "sc_url": "https://suttacentral.net/an3.112",
+    "chain_type": "sequence"
+  }
+]

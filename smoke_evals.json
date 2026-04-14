@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "source": "Past-chat / eval strings from gold PNGs: frontend snapshot testing.png, frontend snapshot testing 2.png, frontend snapshot testing 3.png",
+    "smoke_base_url_env": "SMOKE_BASE_URL",
+    "notes": "Default pytest run uses use_llm:false (retrieval only; no Ollama). Set SMOKE_WITH_LLM=1 for full /api/query with LLM + soft keyword checks on water/shame."
+  },
+  "cases": [
+    {
+      "id": "monk_dispute",
+      "question": "what to do when argueing with another monk?"
+    },
+    {
+      "id": "hey_greeting",
+      "question": "hey",
+      "expect_chunks": false,
+      "expect_chat_only": true
+    },
+    {
+      "id": "thirty_two_parts",
+      "question": "What are the 32 parts of the body? is the foot included?"
+    },
+    {
+      "id": "shame",
+      "question": "What does buddha say about shame?",
+      "llm_answer_keywords": ["shame", "buddha"]
+    },
+    {
+      "id": "incest",
+      "question": "is incest bad?"
+    },
+    {
+      "id": "enlightenment",
+      "question": "what does buddha say about enlightenment?"
+    },
+    {
+      "id": "homelessness",
+      "question": "what does buddha say about homelessness?"
+    },
+    {
+      "id": "water",
+      "question": "What did buddha say about water?",
+      "llm_answer_keywords": ["water", "buddha"]
+    },
+    {
+      "id": "touch_woman",
+      "question": "Is the touch of a woman bad?"
+    }
+  ]
+}

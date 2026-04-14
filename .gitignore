@@ -1,0 +1,25 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.ruff_cache/
+.venv/
+.venv_wx/
+venv/
+.cursor/
+global_chat_history/
+rag_index_an*/
+rag_index_*/
+*.sqlite
+*.db
+*.db-journal
+*.pem
+*.key
+*.p12
+*.crt
+*.pfx
+
+# Local secrets / scratch (do not commit)
+dama5_secrets.md
+dama_users.sqlite

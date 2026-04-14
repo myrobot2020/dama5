@@ -1,0 +1,12 @@
+# Local AN1 app: FastAPI + Chroma + sentence-transformers (same stack as dama3 root).
+fastapi>=0.100.0
+itsdangerous>=2.0.0
+uvicorn[standard]>=0.23.0
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+requests>=2.31.0
+pydantic>=2.0.0
+tqdm>=4.65.0
+google-cloud-aiplatform>=1.71.0
+firebase-admin>=6.5.0
+bcrypt>=4.0.0
