@@ -55,6 +55,16 @@ If `8000` is busy (common with another app), set `$env:PORT = 18080` before `sta
 
 If `exists` is false, open the UI and use **Rebuild** / `POST /api/build`, or copy `rag_index_an1` and `rag_index_an2` from another machine.
 
+## Teacher audio (private GCS)
+
+The Reference panel can play teacher audio segments mapped in `aud/audio_map.json`. For Cloud Run or any deployment where the `aud/*.mp3` files are **not** on disk, store them in a **private** GCS bucket and let the server mint **short-lived signed URLs** for the browser.
+
+- Upload MP3s to: `gs://<bucket>/aud/<filename>.mp3`
+- Set in `.env` (see `.env.example`):
+  - `DAMA_AUDIO_GCS_BUCKET`
+  - `DAMA_AUDIO_GCS_PREFIX=aud/`
+  - `DAMA_AUDIO_URL_TTL_SECONDS=900`
+
 ## Path overrides (optional)
 
 | Variable | Purpose |
