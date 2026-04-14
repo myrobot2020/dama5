@@ -10,11 +10,10 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# App code + corpora + persisted indexes (so it works immediately after deploy).
+# App code + corpora. (Persisted Chroma indexes are not committed; build at runtime via /api/build.)
 COPY an1_app.py an1_build_index.py an1_vertex_core.py an1_build_vertex_bundle.py dama_firebase_auth.py dama_auth_ui.py dama_diy_auth.py chat_embed.html /app/
 COPY an1.json an2.json /app/
-COPY rag_index_an1 /app/rag_index_an1
-COPY rag_index_an2 /app/rag_index_an2
+COPY aud/audio_map.json /app/aud/audio_map.json
 
 EXPOSE 8080
 
