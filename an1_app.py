@@ -1547,18 +1547,61 @@ def api_audio_url(
         ttl = 3600
 
     try:
+        # NOTE: In Cloud Run, default credentials do not include a private key.
+        # We therefore sign via IAMCredentials signBlob (requires Token Creator).
         from datetime import timedelta
 
+        import google.auth  # type: ignore
+        from google.auth import impersonated_credentials  # type: ignore
         from google.cloud import storage  # type: ignore
 
-        client = storage.Client()
+        def _runtime_service_account_email() -> str:
+            # Prefer explicit env override.
+            e = os.environ.get("DAMA_AUDIO_SIGNER_SERVICE_ACCOUNT", "").strip()
+            if e:
+                return e
+            # Cloud Run exposes the service account email via metadata server.
+            try:
+                import requests as _rq  # local alias
+
+                r = _rq.get(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                    headers={"Metadata-Flavor": "Google"},
+                    timeout=2,
+                )
+                if r.status_code == 200:
+                    return (r.text or "").strip()
+            except Exception:
+                pass
+            return ""
+
+        source_creds, _proj = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        sa_email = _runtime_service_account_email()
+        if not sa_email:
+            raise RuntimeError(
+                "Could not determine runtime service account email for signing. "
+                "Set DAMA_AUDIO_SIGNER_SERVICE_ACCOUNT."
+            )
+
+        # Use impersonated credentials so signing works without a private key.
+        signing_creds = impersonated_credentials.Credentials(
+            source_credentials=source_creds,
+            target_principal=sa_email,
+            target_scopes=["https://www.googleapis.com/auth/devstorage.read_only"],
+            lifetime=ttl,
+        )
+
+        client = storage.Client(credentials=signing_creds)
         blob = client.bucket(bucket).blob(blob_name)
         url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(seconds=ttl),
             method="GET",
+            credentials=signing_creds,
         )
-        return JSONResponse({"url": url, "expires_in": ttl, "bucket": bucket, "object": blob_name})
+        return JSONResponse(
+            {"url": url, "expires_in": ttl, "bucket": bucket, "object": blob_name, "signer": sa_email}
+        )
     except HTTPException:
         raise
     except Exception as e:
