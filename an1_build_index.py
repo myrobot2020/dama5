@@ -507,7 +507,8 @@ def build_an3_index() -> int:
         json_path=AN3_PATH,
         persist_dir=PERSIST_AN3_DIR,
         collection_name=COLLECTION_AN3,
-        record_to_docs=_record_to_docs,
+        # AN3 uses AN2-style fields (sutta_id/commentary/chain)
+        record_to_docs=_record_to_docs_an2,
         id_prefix="an3",
         tqdm_desc="AN3 records",
     )
