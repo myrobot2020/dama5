@@ -1,0 +1,8 @@
+﻿name: dama5-main
+description: Build and deploy dama5 on main
+repositoryEventConfig:
+  repository: projects/dama-492316/locations/asia-south1/connections/dama5-conn/repositories/dama5-repo
+  push:
+    branch: "^main$"
+filename: cloudbuild.yaml
+includeLogsWithStatus: true

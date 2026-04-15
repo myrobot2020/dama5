@@ -5,7 +5,7 @@ Portable copy of the AN1 FastAPI stack. All data paths default to **this folder*
 ## Prerequisites
 
 - Python 3.11+ recommended
-- For full LLM answers: Ollama on `http://localhost:11434` with `mistral:instruct`, or Vertex (see `.env.example`)
+- For full LLM answers: Ollama on [`http://localhost:11434`](http://localhost:11434) with `mistral:instruct`, or Vertex (see [`.env.example`](.env.example))
 
 ## Setup
 
@@ -18,7 +18,7 @@ copy .env.example .env
 # Edit .env if using Vertex or non-default paths
 ```
 
-Optional: place `freesound_community-gong-79191.mp3` in the repo root, or set `DAMA_GONG_MP3` to an `.mp3` path.
+Optional: place `freesound_community-gong-79191.mp3` or `temp_gong.wav` in the repo root, or set `DAMA_GONG_MP3` to an `.mp3` or `.wav` path.
 
 ## Run
 
@@ -50,14 +50,14 @@ uvicorn an1_app:app --reload --host 127.0.0.1 --port $env:PORT
 
 If `8000` is busy (common with another app), set `$env:PORT = 18080` before `start_dama5.ps1` or uvicorn.
 
-- App: http://127.0.0.1:8000/
-- Index status: http://127.0.0.1:8000/api/index_status
+- App: [`http://127.0.0.1:8000/`](http://127.0.0.1:8000/)
+- Index status: [`http://127.0.0.1:8000/api/index_status`](http://127.0.0.1:8000/api/index_status)
 
 If `exists` is false, open the UI and use **Rebuild** / `POST /api/build`, or copy `rag_index_an1` and `rag_index_an2` from another machine.
 
 ## Teacher audio (private GCS)
 
-The Reference panel can play teacher audio segments mapped in `aud/audio_map.json`. For Cloud Run or any deployment where the `aud/*.mp3` files are **not** on disk, store them in a **private** GCS bucket and let the server mint **short-lived signed URLs** for the browser.
+The Reference panel can play teacher audio segments mapped in [`aud/audio_map.json`](aud/audio_map.json). For Cloud Run or any deployment where the `aud/*.mp3` files are **not** on disk, store them in a **private** GCS bucket and let the server mint **short-lived signed URLs** for the browser.
 
 - Upload MP3s to: `gs://<bucket>/aud/<filename>.mp3`
 - Set in `.env` (see `.env.example`):

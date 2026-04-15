@@ -143,7 +143,7 @@ LANDING_DIY_HTML = """<!DOCTYPE html>
 <body>
   <div class="card">
     <div class="brand">
-      <div class="name">Dama — local (AN1+AN2)</div>
+      <div class="name">Dama — local (AN1+AN2+AN3)</div>
       <div class="sub">RAG over suttas &amp; commentary. Sign in or create an account — credentials stay on this server.</div>
     </div>
     <p class="hint">Use the same username after deploy; chat history is stored per user on the server.</p>
@@ -245,7 +245,7 @@ LANDING_FIREBASE_HTML = """<!DOCTYPE html>
 <body>
   <div class="wrap">
     <h1>Dama</h1>
-    <p class="sub">AN1 &amp; AN2 — sign in or create an account</p>
+    <p class="sub">AN1, AN2 &amp; AN3 — sign in or create an account</p>
     <div class="field"><label for="em">Email</label><input id="em" type="email" autocomplete="username" /></div>
     <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" /></div>
     <div class="row">
@@ -353,6 +353,66 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
             headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
         )
 
+    LANDING_SIGNED_OUT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dama — Signed out</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: rgba(15, 22, 38, 0.92);
+      --text: #e9eefc;
+      --muted: #a7b3d6;
+      --border: rgba(255,255,255,.10);
+      --accent: #ffcc33;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color: var(--text);
+      background: radial-gradient(1200px 700px at 20% 0%, #1c2a50 0%, var(--bg) 58%) fixed;
+      display: flex; align-items: center; justify-content: center;
+      padding: 1.25rem;
+    }
+    .card {
+      width: 100%; max-width: 520px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.75rem 1.5rem 1.5rem;
+      box-shadow: 0 24px 48px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 6px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+    p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 1.1rem; }
+    a.btn {
+      display: inline-block;
+      text-decoration: none;
+      border-radius: 10px;
+      padding: 0.65rem 1.1rem;
+      font-weight: 650;
+      font-size: 14px;
+    }
+    .primary { background: var(--accent); color: #0b0f19; }
+    .ghost { background: rgba(255,255,255,.08); color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Signed out</h1>
+    <p>You’ve been signed out on this browser.</p>
+    <div class="actions">
+      <a class="btn primary" href="/">Go to home</a>
+      <a class="btn ghost" href="/app">Go to app</a>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
     @app.post("/api/auth/register")
     def auth_register(request: Request, body: AuthUserPass) -> JSONResponse:
         _diy_required()
@@ -442,24 +502,57 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
             return JSONResponse({k: cfg[k] for k in allow if k in cfg})
 
     @app.get("/app")
-    def app_chat():
+    def app_chat(request: Request):
         if not _diy_on() and not _firebase_on():
             return RedirectResponse(url="/", status_code=302)
+        # For DIY auth, verify session exists before serving the app
+        if _diy_on():
+            uid = request.session.get("uid")
+            if uid is None:
+                return RedirectResponse(url="/", status_code=302)
         return chat_response()
 
     @app.get("/")
-    def home():
+    def home(request: Request):
+        # If DIY auth is on and user is already logged in, redirect to /app
+        if _diy_on():
+            uid = request.session.get("uid")
+            if uid is not None:
+                return RedirectResponse(url="/app", status_code=302)
+            return HTMLResponse(
+                content=LANDING_DIY_HTML,
+                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+            )
         if _firebase_on():
             return HTMLResponse(
                 content=LANDING_FIREBASE_HTML,
                 headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
+        return chat_response()
+
+    @app.get("/landing")
+    def signed_out_landing(request: Request):
+        """Dedicated landing used after sign-out (stable even in open-chat mode)."""
+        # If auth is enabled, reuse the normal landing.
         if _diy_on():
+            uid = request.session.get("uid")
+            if uid is not None:
+                # If they're logged in, bounce to the app.
+                return RedirectResponse(url="/app", status_code=302)
             return HTMLResponse(
                 content=LANDING_DIY_HTML,
                 headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
-        return chat_response()
+        if _firebase_on():
+            return HTMLResponse(
+                content=LANDING_FIREBASE_HTML,
+                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+            )
+        # Open chat mode: show a simple "signed out" landing.
+        return HTMLResponse(
+            content=LANDING_SIGNED_OUT_HTML,
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+        )
 
 
 def session_secret() -> str:

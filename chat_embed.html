@@ -179,6 +179,23 @@
       }
       .reading #suttaText.txt.prose .refPara { margin: 0 0 1em; }
       .reading #suttaText.txt.prose .refPara:last-child { margin-bottom: 0; }
+      .reading #suttaText .refMark,
+      .reading #commText .refMark {
+        background: rgba(255, 204, 51, 0.38);
+        color: inherit;
+        padding: 0 2px;
+        border-radius: 4px;
+        box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.22) inset;
+      }
+      .reading #suttaText .refMark.flash,
+      .reading #commText .refMark.flash {
+        animation: refFlash 1.35s ease-out 0s 1;
+      }
+      @keyframes refFlash {
+        0%   { background: rgba(255, 204, 51, 0.80); box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.55) inset; }
+        55%  { background: rgba(255, 204, 51, 0.52); box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.30) inset; }
+        100% { background: rgba(255, 204, 51, 0.20); box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.15) inset; }
+      }
       .reading .split { height: 1px; background: var(--border2); margin: 12px 0; }
       .reading .pastConv {
         margin-top: 8px;
@@ -521,8 +538,24 @@
               <h2>LINKS</h2>
               <div id="chainSummary" class="muted small" style="margin-bottom:8px;"></div>
               <div id="chainVisual" class="txt"></div>
+              <div class="split"></div>
+              <div id="refLinksList" class="txt"></div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ollamaBackdrop" class="profileBackdrop" role="dialog" aria-modal="true" aria-labelledby="ollamaTitle">
+      <div class="profileBox" style="width:min(420px, calc(100vw - 32px));">
+        <h3 id="ollamaTitle">Ollama not running</h3>
+        <p id="ollamaMsg" class="muted small" style="margin:0 0 12px;">
+          This app is set to use Ollama for LLM answers, but it can't reach http://localhost:11434.
+        </p>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+          <button type="button" id="ollamaRetry" class="tightBtn">Retry</button>
+          <button type="button" id="ollamaNoLlm" class="tightBtn">Continue without Ollama</button>
+          <button type="button" id="ollamaClose" class="primary tightBtn">Close</button>
         </div>
       </div>
     </div>
@@ -542,6 +575,7 @@
       </div>
     </div>
 
+    <script src="/static/ui_linkify.js"></script>
     <script>
       // #region agent log
       function __agentDbg(hypothesisId, location, message, data) {
@@ -721,16 +755,25 @@
       const panelLinks = document.getElementById('panelLinks');
       const chainSummaryEl = document.getElementById('chainSummary');
       const chainVisualEl = document.getElementById('chainVisual');
+      const refLinksListEl = document.getElementById('refLinksList');
       const REF_MODE_KEY = 'dama_ref_panel_mode';
       const profileBackdrop = document.getElementById('profileBackdrop');
       const profileBtn = document.getElementById('profileBtn');
       const profileGreet = document.getElementById('profileGreet');
+      const profileHintEl = document.getElementById('profileHint');
       const profileNameInput = document.getElementById('profileNameInput');
       const profileSave = document.getElementById('profileSave');
       const profileSignOut = document.getElementById('profileSignOut');
       const PROFILE_KEY = 'an1_profile_name';
+      const ollamaBackdrop = document.getElementById('ollamaBackdrop');
+      const ollamaMsg = document.getElementById('ollamaMsg');
+      const ollamaRetryBtn = document.getElementById('ollamaRetry');
+      const ollamaNoLlmBtn = document.getElementById('ollamaNoLlm');
+      const ollamaCloseBtn = document.getElementById('ollamaClose');
       let suttaRaw = '';
       let lastSuttaParagraphMeta = null;
+      let _lastQueryChunks = [];
+      let _pendingRefJump = null; // { kind: 'sutta'|'commentary', ref: 'AN ...'|'cAN ...' }
       // #region agent log
       __agentDbg('H1', 'an1_app.py:inline_js:init', 'Reference panel element probe', {
         hasRefModeRow: !!refModeRow,
@@ -740,6 +783,7 @@
         hasPanelLinks: !!panelLinks,
         hasChainSummaryEl: !!chainSummaryEl,
         hasChainVisualEl: !!chainVisualEl,
+        hasRefLinksListEl: !!refLinksListEl,
       });
       // #endregion agent log
 
@@ -800,8 +844,55 @@
       /**
        * Future: wrap [start,end) in suttaRaw (global `suttaRaw`) with <mark> inside the correct <p>; offsets are relative to that raw string, not HTML.
        */
-      function highlightRawRangeInSutta(_el, _raw, _start, _end, _meta) {
-        return;
+      function _escapeHtml(s) { return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+      function _clearSuttaHighlights() {
+        try {
+          if (!suttaTextEl || !lastSuttaParagraphMeta) return;
+          const parts = lastSuttaParagraphMeta.parts || [];
+          const raw = lastSuttaParagraphMeta.raw || '';
+          const paras = suttaTextEl.querySelectorAll('.refPara');
+          for (let i = 0; i < paras.length && i < parts.length; i++) {
+            const pr = parts[i];
+            const seg = raw.slice(pr.start, pr.end);
+            if (paras[i].textContent !== seg) paras[i].textContent = seg;
+          }
+        } catch (e) {}
+      }
+      function highlightRawRangeInSutta(el, raw, start, end, meta) {
+        try {
+          if (!el || !raw || !lastSuttaParagraphMeta) return;
+          const s = Math.max(0, Math.min(Number(start) || 0, raw.length));
+          const e = Math.max(s, Math.min(Number(end) || 0, raw.length));
+          if (e <= s) return;
+          _clearSuttaHighlights();
+
+          const parts = lastSuttaParagraphMeta.parts || [];
+          const paras = el.querySelectorAll('.refPara');
+          if (!parts.length || !paras.length) return;
+
+          // Highlight can span paragraphs; render mark fragments per paragraph.
+          let firstMark = null;
+          for (let i = 0; i < parts.length && i < paras.length; i++) {
+            const pr = parts[i];
+            const segStart = pr.start;
+            const segEnd = pr.end;
+            if (e <= segStart || s >= segEnd) continue;
+            const a = Math.max(s, segStart);
+            const b = Math.min(e, segEnd);
+            const seg = raw.slice(segStart, segEnd);
+            const localA = a - segStart;
+            const localB = b - segStart;
+            const before = seg.slice(0, localA);
+            const mid = seg.slice(localA, localB);
+            const after = seg.slice(localB);
+            const cls = 'refMark' + ((meta && meta.flash) ? ' flash' : '');
+            paras[i].innerHTML = _escapeHtml(before) + '<mark class="' + cls + '">' + _escapeHtml(mid) + '</mark>' + _escapeHtml(after);
+            if (!firstMark) firstMark = paras[i].querySelector('mark.refMark');
+          }
+          if (firstMark && typeof firstMark.scrollIntoView === 'function') {
+            firstMark.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          }
+        } catch (e) {}
       }
 
       function renderSuttaReading(el, raw) {
@@ -819,6 +910,105 @@
           p.className = 'refPara';
           p.textContent = seg;
           el.appendChild(p);
+        }
+      }
+
+      function _clearCommHighlights() {
+        try {
+          if (!commTextEl) return;
+          const t = commTextEl.getAttribute('data-raw') || '';
+          if (t) commTextEl.textContent = t;
+        } catch (e) {}
+      }
+      function highlightRawRangeInCommentary(el, raw, start, end, meta) {
+        try {
+          if (!el || raw == null) return;
+          const r = String(raw);
+          const s = Math.max(0, Math.min(Number(start) || 0, r.length));
+          const e = Math.max(s, Math.min(Number(end) || 0, r.length));
+          if (e <= s) return;
+          _clearCommHighlights();
+          const before = r.slice(0, s);
+          const mid = r.slice(s, e);
+          const after = r.slice(e);
+          const cls = 'refMark' + ((meta && meta.flash) ? ' flash' : '');
+          el.innerHTML = _escapeHtml(before) + '<mark class="' + cls + '">' + _escapeHtml(mid) + '</mark>' + _escapeHtml(after);
+          const mk = el.querySelector('mark.refMark');
+          if (mk && typeof mk.scrollIntoView === 'function') {
+            mk.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          }
+        } catch (e) {}
+      }
+
+      function _extractDocBodyFromChunkText(kind, text) {
+        const t = String(text || '');
+        const k = String(kind || '').toLowerCase();
+        if (k === 'commentary') {
+          const i = t.indexOf('TEACHER COMMENTARY:\n');
+          if (i >= 0) return t.slice(i + 'TEACHER COMMENTARY:\n'.length).trim();
+          const j = t.indexOf('TEACHER COMMENTARY:');
+          if (j >= 0) return t.slice(j + 'TEACHER COMMENTARY:'.length).trim();
+          return t.trim();
+        }
+        const i = t.indexOf('SUTTA:\n');
+        if (i >= 0) return t.slice(i + 'SUTTA:\n'.length).trim();
+        const j = t.indexOf('SUTTA:');
+        if (j >= 0) return t.slice(j + 'SUTTA:'.length).trim();
+        return t.trim();
+      }
+      function _findLooseRange(raw, needle) {
+        const r = String(raw || '');
+        const n0 = String(needle || '').trim();
+        if (!r || !n0) return null;
+        // Start with an exact match (fast path).
+        let idx = r.indexOf(n0);
+        if (idx >= 0) return { start: idx, end: idx + n0.length };
+
+        // Loose whitespace match: tokenized needle, joined by \s+.
+        const n = n0.replace(/\s+/g, ' ').trim();
+        const toks = n.split(' ').filter(Boolean).slice(0, 28);
+        if (toks.length < 4) return null;
+        const escTok = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pat = toks.map(escTok).join('\\s+');
+        const re = new RegExp(pat, 'i');
+        const m = re.exec(r);
+        if (m && m.index != null) return { start: m.index, end: m.index + m[0].length };
+        return null;
+      }
+
+      function _tryJumpAndHighlight(kind, ref) {
+        try {
+          const k = (kind || '').toString().toLowerCase();
+          const r = normalizeSuttaCiteRef(ref);
+          if (!r) return false;
+
+          if (k === 'commentary') {
+            const commRaw = (commTextEl && commTextEl.getAttribute('data-raw')) ? (commTextEl.getAttribute('data-raw') || '') : (commTextEl ? commTextEl.textContent : '');
+            const wanted = _lastQueryChunks
+              .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'commentary')
+              .filter((c) => normalizeSuttaCiteRef(String(c.commentary_id || '')) === r || normalizeSuttaCiteRef('c' + String(c.suttaid || '')) === r)
+              .sort((a, b) => String(b.text || '').length - String(a.text || '').length)[0];
+            if (!wanted) return false;
+            const body = _extractDocBodyFromChunkText('commentary', wanted.text || '');
+            const rng = _findLooseRange(commRaw || '', body.slice(0, 320));
+            if (!rng) return false;
+            highlightRawRangeInCommentary(commTextEl, commRaw || '', rng.start, rng.end, { flash: true });
+            return true;
+          }
+
+          // sutta
+          const wanted = _lastQueryChunks
+            .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'sutta')
+            .filter((c) => normalizeSuttaCiteRef(String(c.suttaid || '')) === r)
+            .sort((a, b) => String(b.text || '').length - String(a.text || '').length)[0];
+          if (!wanted) return false;
+          const body = _extractDocBodyFromChunkText('sutta', wanted.text || '');
+          const rng = _findLooseRange(suttaRaw || '', body.slice(0, 320));
+          if (!rng) return false;
+          highlightRawRangeInSutta(suttaTextEl, suttaRaw || '', rng.start, rng.end, { flash: true });
+          return true;
+        } catch (e) {
+          return false;
         }
       }
 
@@ -887,6 +1077,66 @@
         chainVisualEl.innerHTML = '<div class="chainFlow">' + parts.join('') + '</div>';
       }
 
+      const LLM_PREF_KEY = 'dama_use_llm';
+      function getUseLlm() {
+        try {
+          const v = (localStorage.getItem(LLM_PREF_KEY) || '').trim().toLowerCase();
+          if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false;
+          if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return true;
+        } catch (e) {}
+        return true; // default: try to use Ollama/LLM
+      }
+      function setUseLlm(v) {
+        try {
+          localStorage.setItem(LLM_PREF_KEY, v ? '1' : '0');
+        } catch (e) {}
+      }
+      function isLikelyOllamaDown(err) {
+        const s = String((err && err.message) ? err.message : err || '').toLowerCase();
+        return (
+          s.includes('ollama') ||
+          s.includes('11434') ||
+          s.includes('connection refused') ||
+          s.includes('failed to establish a new connection') ||
+          s.includes('max retries exceeded')
+        );
+      }
+      function showOllamaModal(message) {
+        if (!ollamaBackdrop) return;
+        if (ollamaMsg) {
+          const m = (message && String(message).trim()) ? String(message).trim() : '';
+          ollamaMsg.textContent = m || "This app is set to use Ollama for LLM answers, but it can't reach http://localhost:11434.";
+        }
+        ollamaBackdrop.classList.add('open');
+      }
+      function closeOllamaModal() {
+        if (!ollamaBackdrop) return;
+        ollamaBackdrop.classList.remove('open');
+      }
+
+      function _sidToScSlug(sid) {
+        const s = String(sid || '').trim();
+        if (!s) return '';
+        // "AN 1.1.1" -> "an1.1.1"
+        return s.toLowerCase().replace(/\s+/g, '');
+      }
+      function renderReferenceLinks(sid, cid) {
+        if (!refLinksListEl) return;
+        const slug = _sidToScSlug(sid);
+        const items = [];
+        if (cid) items.push('<div class="muted small">Commentary id: <code>' + esc(String(cid)) + '</code></div>');
+        if (sid) items.push('<div class="muted small">Reference: <code>' + esc(String(sid)) + '</code></div>');
+        if (slug) {
+          const u1 = 'https://suttacentral.net/' + encodeURIComponent(slug);
+          const u2 = 'https://suttacentral.net/search?query=' + encodeURIComponent(slug);
+          items.push('<div style="margin-top:6px;"><a href="' + escAttr(u1) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (discourse page)</a></div>');
+          items.push('<div><a href="' + escAttr(u2) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (search)</a></div>');
+        } else {
+          items.push('<div class="muted small">(no external links for this item)</div>');
+        }
+        refLinksListEl.innerHTML = items.join('');
+      }
+
       let _gongAudio = null;
       let _gongPrimed = false;
       /** Browsers block unmuted play() after async unless audio was started during a user gesture; prime with a silent play. */
@@ -942,157 +1192,7 @@
         } catch (e) {}
       }
 
-      function esc(s) { return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-      function escAttr(s) {
-        return String(s ?? '')
-          .replace(/&/g, '&amp;')
-          .replace(/"/g, '&quot;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-      }
-      function normalizeSuttaCiteRef(raw) {
-        const t0 = String(raw || '').trim().replace(/\\s+/g, ' ');
-        let m = t0.match(/^cAN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
-        if (m) return 'cAN ' + m[1];
-        // Sometimes the backend emits "pAN 2.4.1" (prefixed AN). Normalize to canonical "AN 2.4.1".
-        m = t0.match(/^pAN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
-        if (m) return 'AN ' + m[1];
-        m = t0.match(/^AN\\s*(\\d+(?:\\.\\d+)*)\\s*$/i);
-        if (m) return 'AN ' + m[1];
-        return t0;
-      }
-      function citeOpenButton(refInner, kind) {
-        const r = normalizeSuttaCiteRef(String(refInner || '').trim());
-        const safe = esc(r);
-        const a = escAttr(r);
-        const k = kind === 'commentary' ? 'commentary' : 'sutta';
-        /* <a> is valid inside <p>; <button> is often stripped by DOMPurify inside paragraphs */
-        return '<a href="#" class="cite cite-open" data-kind="' + k + '" data-ref="' + a + '">(' + safe + ')</a>';
-      }
-      function citeTokenToButton(token) {
-        const t = String(token || '').trim();
-        if (/^cAN\\s*\\d/i.test(t)) return citeOpenButton(t, 'commentary');
-        if (/^pAN\\s*\\d/i.test(t)) return citeOpenButton(normalizeSuttaCiteRef(t), 'sutta');
-        if (/^AN\\s*\\d/i.test(t)) return citeOpenButton(t, 'sutta');
-        return esc(t);
-      }
-      /** Split comma-separated refs inside one pair of parens so each (AN …)/(cAN …) is its own link. */
-      function citeParenGroup(innerRaw) {
-        const inner = String(innerRaw || '').trim();
-        if (!inner) return '()';
-        const parts = inner.split(',').map((x) => x.trim()).filter(Boolean);
-        if (parts.length === 1) {
-          const b = citeTokenToButton(parts[0]);
-          if (b.indexOf('<a ') === 0) return b;
-          return '(' + b + ')';
-        }
-        return '(' + parts.map(citeTokenToButton).join(', ') + ')';
-      }
-      function citeifyBareOutsideButtons(s) {
-        const str = String(s || '');
-        const low = str.toLowerCase();
-        let i = 0;
-        let out = '';
-        while (i < str.length) {
-          const iBtn = low.indexOf('<button', i);
-          const iA = low.indexOf('<a ', i);
-          let open = -1;
-          let closeTag = '';
-          if (iBtn >= 0 && (iA < 0 || iBtn <= iA)) {
-            open = iBtn;
-            closeTag = '</button>';
-          } else if (iA >= 0) {
-            open = iA;
-            closeTag = '</a>';
-          }
-          if (open === -1) {
-            out += _replaceBareCitations(str.slice(i));
-            break;
-          }
-          const gt = str.indexOf('>', open);
-          if (gt < 0) {
-            out += _replaceBareCitations(str.slice(i));
-            out += str.slice(open);
-            break;
-          }
-          const openTag = str.slice(open, gt + 1);
-          const isCite = openTag.indexOf('cite-open') >= 0;
-          if (!isCite) {
-            out += _replaceBareCitations(str.slice(i, open));
-            if (open === iBtn) {
-              out += str.slice(open, open + 7);
-              i = open + 7;
-            } else {
-              out += str.slice(open, open + 3);
-              i = open + 3;
-            }
-            continue;
-          }
-          out += _replaceBareCitations(str.slice(i, open));
-          const close = low.indexOf(closeTag, gt);
-          if (close === -1) {
-            out += str.slice(open);
-            break;
-          }
-          out += str.slice(open, close + closeTag.length);
-          i = close + closeTag.length;
-        }
-        return out;
-      }
-      function _replaceBareCitations(t) {
-        let x = String(t || '');
-        /* cAN before AN; optional space so AN1.5.8 matches like AN 1.5.8 */
-        x = x.replace(/\\b(cAN)\\s*(\\d+(?:\\.\\d+)*)\\b/gi, (_, __, nums) => citeOpenButton('cAN ' + nums, 'commentary'));
-        // Support both "AN 1.5.8" and "pAN 1.5.8" (seen in some generated text).
-        x = x.replace(/\\b(pAN|AN)\\s*(\\d+(?:\\.\\d+)*)\\b/gi, (_, __, nums) => citeOpenButton('AN ' + nums, 'sutta'));
-        return x;
-      }
-      function formatAsstAnswer(raw) {
-        let s = esc(raw ?? '');
-        /* [(] [)] = literal parens; split commas so (AN 1, AN 2) is not one mashed ref */
-        s = s.replace(/[(](cAN[^)]{0,400})[)]/gi, (_, g1) => citeParenGroup(g1));
-        s = s.replace(/[(](AN[^)]{0,400})[)]/g, (_, g1) => citeParenGroup(g1));
-        s = citeifyBareOutsideButtons(s);
-        return s;
-      }
-      function citeifyOutsideFences(raw) {
-        const parts = String(raw ?? '').split('```');
-        const out = [];
-        for (let i = 0; i < parts.length; i++) {
-          let chunk = parts[i];
-          if (i % 2 === 0) {
-            chunk = chunk.replace(/[(](cAN[^)]{0,400})[)]/gi, (_, g1) => citeParenGroup(g1));
-            chunk = chunk.replace(/[(](AN[^)]{0,400})[)]/g, (_, g1) => citeParenGroup(g1));
-            chunk = citeifyBareOutsideButtons(chunk);
-          }
-          out.push(chunk);
-        }
-        return out.join('```');
-      }
-      function safeMdHtml(html) {
-        if (typeof DOMPurify === 'undefined') return esc(String(html ?? ''));
-        return DOMPurify.sanitize(String(html ?? ''), {
-          ALLOWED_TAGS: ['p','br','ul','ol','li','strong','em','del','h1','h2','h3','h4','blockquote','a','pre','code','table','thead','tbody','tr','th','td','hr','small','span','button'],
-          ALLOWED_ATTR: ['href','title','class','colspan','rowspan','rel','target','type','data-kind','data-ref'],
-          // We rely on data-kind/data-ref to open the Reference panel from citations.
-          ALLOW_DATA_ATTR: true,
-        });
-      }
-      function renderMarkdown(raw) {
-        const src = String(raw ?? '');
-        if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
-          return '<div class="md md-fallback">' + formatAsstAnswer(src) + '</div>';
-        }
-        const cited = citeifyOutsideFences(src);
-        let html;
-        try {
-          marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-          html = marked.parse(cited);
-        } catch (e) {
-          html = '<p>' + esc(src) + '</p>';
-        }
-        return '<div class="md">' + safeMdHtml(html) + '</div>';
-      }
+      // Moved citation/markdown helpers to /static/ui_linkify.js (globals: esc, escAttr, normalizeSuttaCiteRef, citeOpenButton, renderMarkdown, ...).
 
       function linkifyCitationsInElement(rootEl) {
         if (!rootEl) return;
@@ -1104,7 +1204,6 @@
               if (p.closest('a, pre, code, textarea, button, script, style')) return NodeFilter.FILTER_REJECT;
               const t = (node.nodeValue || '');
               if (t.indexOf('AN') < 0 && t.indexOf('cAN') < 0 && t.indexOf('pAN') < 0) return NodeFilter.FILTER_REJECT;
-              if (t.indexOf('(') < 0 || t.indexOf(')') < 0) return NodeFilter.FILTER_REJECT;
               return NodeFilter.FILTER_ACCEPT;
             } catch {
               return NodeFilter.FILTER_REJECT;
@@ -1115,7 +1214,9 @@
         const nodes = [];
         while (walker.nextNode()) nodes.push(walker.currentNode);
 
-        const re = /\((cAN|pAN|AN)\s*\d+(?:\.\d+)*\)/gi;
+        // Match both parenthesized and bare citations, e.g. "(AN 1.10.17)" or "AN 1.10.17,".
+        // Keep it conservative: only AN/cAN/pAN + digits/dots.
+        const re = /\b(cAN|pAN|AN)\s*\d+(?:\.\d+)*\b/gi;
         for (const n of nodes) {
           const text = n.nodeValue || '';
           re.lastIndex = 0;
@@ -1129,7 +1230,7 @@
             const end = re.lastIndex;
             if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
 
-            const inner = text.slice(start + 1, end - 1);
+            const inner = text.slice(start, end);
             const norm = normalizeSuttaCiteRef(inner);
             const kind = norm.toLowerCase().startsWith('can ') ? 'commentary' : 'sutta';
             const a = document.createElement('a');
@@ -1137,7 +1238,7 @@
             a.className = 'cite cite-open';
             a.setAttribute('data-kind', kind);
             a.setAttribute('data-ref', norm);
-            a.textContent = '(' + norm + ')';
+            a.textContent = norm;
             frag.appendChild(a);
 
             last = end;
@@ -1389,20 +1490,22 @@
           const mode = (data.mode || '').toString();
           const brandEl = document.getElementById('brandName');
           if (brandEl) {
-            brandEl.textContent = mode === 'vertex' ? 'Dama — Vertex (AN1+AN2)' : 'Dama — local (AN1+AN2)';
+            brandEl.textContent = mode === 'vertex' ? 'Dama — Vertex (AN1+AN2+AN3)' : 'Dama — local (AN1+AN2+AN3)';
           }
           const n1 = Number(data.count) || 0;
           const n2 = Number(data.an2_count) || 0;
+          const n3 = Number(data.an3_count) || 0;
           const v1 = data.vertex_an1_chunks != null ? Number(data.vertex_an1_chunks) : null;
           const v2 = data.vertex_an2_chunks != null ? Number(data.vertex_an2_chunks) : null;
+          const v3 = data.vertex_an3_chunks != null ? Number(data.vertex_an3_chunks) : null;
           const line =
             mode === 'vertex'
               ? (data.exists
-                  ? (v1 != null && v2 != null && (v1 > 0 || v2 > 0)
-                      ? ('Vertex · ' + n1 + ' chunks (AN1: ' + v1 + ' · AN2: ' + v2 + ')')
+                  ? (v1 != null && v2 != null && v3 != null && (v1 > 0 || v2 > 0 || v3 > 0)
+                      ? ('Vertex · ' + n1 + ' chunks (AN1: ' + v1 + ' · AN2: ' + v2 + ' · AN3: ' + v3 + ')')
                       : ('Vertex · ' + n1 + ' chunks'))
                   : 'Vertex corpus missing')
-              : 'AN1: ' + n1 + ' · AN2: ' + n2 + (mode ? ' · ' + mode : '');
+              : 'Index: AN1: ' + n1 + ' · AN2: ' + n2 + ' · AN3: ' + n3 + (mode ? ' · ' + mode : '');
           setIdxStatus(line);
           const tip = [
             data.build,
@@ -1416,8 +1519,10 @@
             data.error,
             data.an1_path,
             data.an2_path,
+            data.an3_path,
             data.persist_dir,
             data.persist_an2_dir,
+            data.persist_an3_dir,
             data.vertex_note,
           ]
             .filter(Boolean)
@@ -1495,6 +1600,7 @@
         suttaRaw = data.sutta != null ? String(data.sutta) : '';
         renderSuttaReading(suttaTextEl, suttaRaw);
         const commRaw = (data.commentry != null && String(data.commentry).trim()) ? data.commentry : '(no commentary)';
+        try { commTextEl.setAttribute('data-raw', String(commRaw)); } catch (e) {}
         commTextEl.textContent = commRaw;
         const ch = data.chain != null ? data.chain : null;
         const hasChain = ch && typeof ch === 'object' && (Array.isArray(ch.items) ? ch.items.length > 0 : Object.keys(ch).length > 0);
@@ -1516,7 +1622,17 @@
         // If there is no chain, Links will show "(no chain for this discourse)".
         if (refModeRow) refModeRow.style.display = 'flex';
         renderChainVisual(hasChain ? ch : null);
+        renderReferenceLinks(sid, cid);
         setRefMode(getRefMode());
+
+        // If a click requested a jump/highlight, attempt it now that the reference is rendered.
+        if (_pendingRefJump && _pendingRefJump.ref) {
+          const pj = _pendingRefJump;
+          _pendingRefJump = null;
+          // Ensure we're on the relevant panel.
+          setRefMode(pj.kind === 'commentary' ? 'sutta' : getRefMode());
+          void Promise.resolve().then(() => { _tryJumpAndHighlight(pj.kind, pj.ref); });
+        }
       }
 
       async function openReadingFromCitation(kind, ref) {
@@ -1528,6 +1644,7 @@
         // #endregion agent log
         suttaRaw = '';
         lastSuttaParagraphMeta = null;
+        _pendingRefJump = { kind: (kind === 'commentary' ? 'commentary' : 'sutta'), ref: r };
         suttaTextEl.classList.remove('prose');
         suttaTextEl.textContent = '';
         commTextEl.textContent = '';
@@ -1553,7 +1670,12 @@
           suttaRaw = '';
           lastSuttaParagraphMeta = null;
           suttaTextEl.classList.remove('prose');
-          suttaTextEl.textContent = 'Could not load: ' + (e?.message || e);
+          const msg = (e && e.message) ? String(e.message) : String(e);
+          suttaTextEl.textContent =
+            'Could not load this citation.\n\n' +
+            'Citation: ' + r + '\n' +
+            (msg ? ('Error: ' + msg) : '') +
+            '\n\nTip: this usually means the citation id does not exist in your local corpus; ask again and request an (AN x.y.z) id exactly as shown in the dataset.';
           commTextEl.textContent = '';
           renderChainVisual(null);
         }
@@ -1597,22 +1719,22 @@
         lastUserQuestion = question;
         const t0 = performance.now();
         try {
+          const useLlm = getUseLlm();
           // #region agent log
           __agentDbg('H6', 'an1_app.py:inline_js:askWithQuestion', 'Sending /api/query', {
-            body: { question: question, book: 'all', use_llm: false, k: 8 },
+            body: { question: question, book: 'all', use_llm: useLlm, k: 8 },
           });
           // #endregion agent log
           const data = await fetchJson('/api/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            // Default to retrieval-only so Cloud Run works without Ollama.
-            // LLM mode can be re-enabled later via explicit UI toggle / env-backed config.
-            body: JSON.stringify({ question, book: 'all', use_llm: false, k: 8 }),
+            body: JSON.stringify({ question, book: 'all', use_llm: useLlm, k: 8 }),
             signal: askAbort.signal,
           });
           const latencyMs = Math.round(performance.now() - t0);
           setChatStatus('Done · ' + latencyMs + ' ms');
           const chunks = data.chunks || [];
+          _lastQueryChunks = Array.isArray(chunks) ? chunks : [];
           const sidKinds = [];
           for (const c of chunks) {
             const sid = (c.suttaid || '').toString().trim();
@@ -1712,6 +1834,11 @@
               resizeComposer();
             }
           } else {
+            if (isLikelyOllamaDown(e)) {
+              setChatStatus('Ollama not running (LLM unavailable).');
+              showOllamaModal((e && e.message) ? String(e.message) : String(e));
+              return;
+            }
             setChatStatus('Error after ' + latencyMs + ' ms: ' + (e && e.message ? e.message : e));
             appendMsg('asst', '**Request failed**\\n\\n' + (e && e.message ? e.message : String(e)), {
               error: true,
@@ -1972,6 +2099,15 @@
       }
 
       function initProfileChrome() {
+        if (profileHintEl) {
+          if (window.__DAMA_FIREBASE_REQUIRED) {
+            profileHintEl.textContent = 'Display name is stored in your Firebase account (Email/Google).';
+          } else if (window.__DAMA_DIY_AUTH) {
+            profileHintEl.textContent = 'Display name is saved on this server for your local account.';
+          } else {
+            profileHintEl.textContent = 'Display name is stored only in this browser (no account login).';
+          }
+        }
         syncProfileGreet();
         profileBtn.addEventListener('click', () => openProfileModal());
         profileBackdrop.addEventListener('click', (ev) => {
@@ -1995,6 +2131,13 @@
               } catch (e) {
                 setChatStatus('Could not save profile: ' + (e && e.message ? e.message : e));
               }
+            } else if (window.__DAMA_FIREBASE_REQUIRED && window.firebase && firebase.auth().currentUser) {
+              try {
+                await firebase.auth().currentUser.updateProfile({ displayName: v || '' });
+                await syncAccountMe();
+              } catch (e) {
+                setChatStatus('Could not update Firebase profile: ' + (e && e.message ? e.message : e));
+              }
             } else {
               window.__damaAccount = Object.assign({}, window.__damaAccount || {}, { display_name: v || null });
             }
@@ -2012,17 +2155,20 @@
           closeProfileModal();
           if (window.__DAMA_DIY_AUTH) {
             fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
-              .then(function() { window.location.href = '/'; })
-              .catch(function() { window.location.href = '/'; });
+              .then(function() { window.location.href = '/landing'; })
+              .catch(function() { window.location.href = '/landing'; });
             return;
           }
           if (window.__DAMA_FIREBASE_REQUIRED && window.firebase) {
             firebase.auth().signOut().then(function() {
-              window.location.href = '/';
+              window.location.href = '/landing';
             }).catch(function() {
-              window.location.href = '/';
+              window.location.href = '/landing';
             });
+            return;
           }
+          // Open chat mode: just reload to show landing/app page
+          window.location.href = '/landing';
         });
         document.addEventListener('keydown', (ev) => {
           if (ev.key === 'Escape' && profileBackdrop.classList.contains('open')) {
@@ -2119,6 +2265,23 @@
       if (refModeLinksBtn) refModeLinksBtn.addEventListener('click', () => setRefMode('links'));
       syncUiHints();
       setRefMode(getRefMode());
+
+      if (ollamaBackdrop) {
+        ollamaBackdrop.addEventListener('click', (ev) => {
+          if (ev.target === ollamaBackdrop) closeOllamaModal();
+        });
+      }
+      if (ollamaCloseBtn) ollamaCloseBtn.addEventListener('click', () => closeOllamaModal());
+      if (ollamaRetryBtn) ollamaRetryBtn.addEventListener('click', () => {
+        closeOllamaModal();
+        setUseLlm(true);
+        if (lastUserQuestion) void askWithQuestion(lastUserQuestion, { fromInput: false });
+      });
+      if (ollamaNoLlmBtn) ollamaNoLlmBtn.addEventListener('click', () => {
+        closeOllamaModal();
+        setUseLlm(false);
+        if (lastUserQuestion) void askWithQuestion(lastUserQuestion, { fromInput: false });
+      });
 
       initProfileChrome();
       initLayoutChrome();

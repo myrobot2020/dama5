@@ -73,14 +73,19 @@ COLLECTION_AN2 = an1_build.COLLECTION_AN2
 AN3_PATH = an1_build.AN3_PATH
 PERSIST_AN3_DIR = an1_build.PERSIST_AN3_DIR
 COLLECTION_AN3 = an1_build.COLLECTION_AN3
+_GONG_ENV = os.environ.get("DAMA_GONG_MP3", "").strip()
+_GONG_DEFAULT_MP3 = BASE_DIR / "freesound_community-gong-79191.mp3"
 GONG_MP3_PATH = (
-    Path(os.environ.get("DAMA_GONG_MP3", "").strip()).expanduser().resolve()
-    if os.environ.get("DAMA_GONG_MP3", "").strip()
-    else (BASE_DIR / "freesound_community-gong-79191.mp3")
+    Path(_GONG_ENV).expanduser().resolve()
+    if _GONG_ENV
+    else (_GONG_DEFAULT_MP3 if _GONG_DEFAULT_MP3.is_file() else (BASE_DIR / "temp_gong.wav"))
 )
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:instruct"
+
+# Reuse HTTP connections (Ollama + metadata server, etc.)
+_HTTP = requests.Session()
 
 # Bumped when RAG/LLM behavior changes (shown in GET /api/index_status so you know the server reloaded).
 AN1_APP_BUILD = "2026-04-13-gong-autoplay-gesture"
@@ -513,6 +518,8 @@ _lock = threading.RLock()
 _embed_model: Optional[Any] = None
 _reranker: Optional[Any] = None
 _items_cache: Dict[str, List[ItemDetail]] = {}
+_collection_cache: Dict[str, Any] = {}
+_chroma_client_cache: Dict[str, Any] = {}
 
 
 def _norm_book(book: Optional[str]) -> str:
@@ -572,11 +579,22 @@ def _get_collection(book: str = "an1") -> Any:
     from chromadb.config import Settings
 
     b = _norm_book(book)
-    client = chromadb.PersistentClient(
-        path=str(_persist_dir_for_book(b)),
-        settings=Settings(anonymized_telemetry=False),
-    )
-    return client.get_collection(_collection_name_for_book(b))
+    key = b
+    col = _collection_cache.get(key)
+    if col is not None:
+        return col
+    # Cache PersistentClient per path to avoid repeated sqlite initialization cost.
+    pdir = str(_persist_dir_for_book(b))
+    client = _chroma_client_cache.get(pdir)
+    if client is None:
+        client = chromadb.PersistentClient(
+            path=pdir,
+            settings=Settings(anonymized_telemetry=False),
+        )
+        _chroma_client_cache[pdir] = client
+    col = client.get_collection(_collection_name_for_book(b))
+    _collection_cache[key] = col
+    return col
 
 
 def _get_embed_model() -> Any:
@@ -1124,7 +1142,7 @@ def _retrieve_vertex(bundle: Dict[str, Any], query: str, k: int) -> List[Chunk]:
 
 
 def _ollama_chat(messages: list, temperature: float = 0, num_ctx: int = 4096, timeout: int = 600) -> str:
-    resp = requests.post(
+    resp = _HTTP.post(
         f"{OLLAMA_BASE_URL}/api/chat",
         json={
             "model": OLLAMA_MODEL,
@@ -1415,6 +1433,15 @@ def _invalidate_items_cache(book: Optional[str] = None) -> None:
         _items_cache.pop(_norm_book(book), None)
 
 
+def _invalidate_collection_cache(book: Optional[str] = None) -> None:
+    if book is None:
+        _collection_cache.clear()
+        _chroma_client_cache.clear()
+        return
+    b = _norm_book(book)
+    _collection_cache.pop(b, None)
+
+
 def _load_items(book: str = "an1") -> List[ItemDetail]:
     global _items_cache
     b = _norm_book(book)
@@ -1539,6 +1566,11 @@ AUD_DIR = (BASE_DIR / "aud").resolve()
 if AUD_DIR.is_dir():
     app.mount("/aud", StaticFiles(directory=str(AUD_DIR)), name="aud")
 
+# Serve UI static assets (modularized JS/CSS)
+STATIC_DIR = (BASE_DIR / "static").resolve()
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 def _audio_gcs_bucket() -> str:
     return os.environ.get("DAMA_AUDIO_GCS_BUCKET", "").strip() or ""
@@ -1610,9 +1642,7 @@ def api_audio_url(
                 return e
             # Cloud Run exposes the service account email via metadata server.
             try:
-                import requests as _rq  # local alias
-
-                r = _rq.get(
+                r = _HTTP.get(
                     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
                     headers={"Metadata-Flavor": "Google"},
                     timeout=2,
@@ -1660,9 +1690,11 @@ def api_audio_url(
 def serve_gong_mp3() -> FileResponse:
     if not GONG_MP3_PATH.is_file():
         raise HTTPException(status_code=404, detail="gong asset missing")
+    # Detect media type based on file extension
+    media_type = "audio/mpeg" if str(GONG_MP3_PATH).endswith(".mp3") else "audio/wav"
     return FileResponse(
         GONG_MP3_PATH,
-        media_type="audio/mpeg",
+        media_type=media_type,
         filename="gong.mp3",
     )
 
@@ -2057,21 +2089,25 @@ def api_build(
                 vx.invalidate_bundle_cache()
                 bundle = vx.ensure_bundle_loaded(PERSIST_DIR)
                 _invalidate_items_cache()
+                _invalidate_collection_cache()
                 return BuildResponse(ok=True, collection_count=len(vx.bundle_chunk_rows(bundle)))
 
             if b == "an3":
                 an1_build.build_an3_index()
                 _invalidate_items_cache("an3")
+                _invalidate_collection_cache("an3")
                 return BuildResponse(ok=True, collection_count=_collection_count_safe("an3"))
 
             if b == "an2":
                 an1_build.build_an2_index()
                 _invalidate_items_cache("an2")
+                _invalidate_collection_cache("an2")
                 return BuildResponse(ok=True, collection_count=_collection_count_safe("an2"))
 
             if b == "an1":
                 an1_build.build_an1_index()
                 _invalidate_items_cache("an1")
+                _invalidate_collection_cache("an1")
                 return BuildResponse(ok=True, collection_count=_collection_count_safe("an1"))
 
             an1_build.build_an1_index()
@@ -2080,6 +2116,7 @@ def api_build(
             if AN3_PATH.exists():
                 an1_build.build_an3_index()
             _invalidate_items_cache()
+            _invalidate_collection_cache()
             c1 = _collection_count_safe("an1")
             c2 = _collection_count_safe("an2")
             c3 = _collection_count_safe("an3")

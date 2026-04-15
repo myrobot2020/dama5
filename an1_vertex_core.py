@@ -31,6 +31,8 @@ from urllib.parse import urlparse
 _bundle_lock = threading.RLock()
 _bundle: Optional[Dict[str, Any]] = None
 _embed_model_obj: Any = None
+_vertex_init_lock = threading.RLock()
+_vertex_inited: bool = False
 
 
 def an1_vertex_enabled() -> bool:
@@ -58,6 +60,23 @@ def vertex_project_and_location() -> Tuple[str, str]:
         or "us-central1"
     )
     return project, location
+
+
+def _ensure_vertexai_init() -> None:
+    """Initialize vertexai once per process (idempotent)."""
+    global _vertex_inited
+    if _vertex_inited:
+        return
+    with _vertex_init_lock:
+        if _vertex_inited:
+            return
+        import vertexai  # type: ignore
+
+        project, location = vertex_project_and_location()
+        if not project:
+            raise RuntimeError("GOOGLE_CLOUD_PROJECT (or GCP_PROJECT) is required for Vertex.")
+        vertexai.init(project=project, location=location)
+        _vertex_inited = True
 
 
 def embedding_model_name() -> str:
@@ -135,13 +154,9 @@ def upload_bundle_file(local_path: Path, gs_uri: str) -> None:
 def _get_embed_model() -> Any:
     global _embed_model_obj
     if _embed_model_obj is None:
-        import vertexai  # type: ignore
         from vertexai.language_models import TextEmbeddingModel  # type: ignore
 
-        project, location = vertex_project_and_location()
-        if not project:
-            raise RuntimeError("GOOGLE_CLOUD_PROJECT (or GCP_PROJECT) is required for Vertex embeddings.")
-        vertexai.init(project=project, location=location)
+        _ensure_vertexai_init()
         _embed_model_obj = TextEmbeddingModel.from_pretrained(embedding_model_name())
     return _embed_model_obj
 
@@ -176,13 +191,9 @@ def cosine_distance(a: List[float], b: List[float]) -> float:
 
 
 def gemini_generate(system_text: str, user_text: str, temperature: float = 0.2) -> str:
-    import vertexai  # type: ignore
     from vertexai.generative_models import GenerativeModel  # type: ignore
 
-    project, location = vertex_project_and_location()
-    if not project:
-        raise RuntimeError("GOOGLE_CLOUD_PROJECT (or GCP_PROJECT) is required for Vertex chat.")
-    vertexai.init(project=project, location=location)
+    _ensure_vertexai_init()
     gm = GenerativeModel(chat_model_name())
     prompt = f"[SYSTEM]\n{system_text}\n\n[USER]\n{user_text}"
     resp = gm.generate_content(
