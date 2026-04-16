@@ -167,5 +167,34 @@
         228
       ]
     }
+  },
+  "cAN 2.1.2": {
+    "file": "006_Anguttara Nikaya Book  2A 212 - 239 by Bhante Hye Dhammavuddho Mahathera.mp3",
+    "start_s": 57.46,
+    "end_s": 155.16,
+    "source": "whisperx+simple_fuzzy",
+    "debug": {
+      "anchors_used": [
+        {
+          "anchor": "the buddha is saying that the struggle of householders is to provide the necessities",
+          "seg_index": 17,
+          "score": 91
+        },
+        {
+          "anchor": "thing after another they want then a car and a house and grandchildren later",
+          "seg_index": 25,
+          "score": 81
+        },
+        {
+          "anchor": "end the cycle of rebirth is far more important and then the nexus is",
+          "seg_index": 33,
+          "score": 64
+        }
+      ],
+      "segment_range": [
+        16,
+        34
+      ]
+    }
   }
 }

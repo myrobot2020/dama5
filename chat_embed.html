@@ -458,6 +458,21 @@
       <div class="rightmeta">
         <span id="profileGreet" class="small" style="color:#dbe6ff;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
         <button type="button" id="profileBtn" class="tightBtn">Profile</button>
+        <span id="rebuildBooks" class="muted small" style="display:inline-flex;align-items:center;gap:8px;">
+          <span class="muted small">Rebuild:</span>
+          <label class="muted small" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;">
+            <input type="checkbox" id="rebuildAn1" />
+            <span>AN1</span>
+          </label>
+          <label class="muted small" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;">
+            <input type="checkbox" id="rebuildAn2" checked />
+            <span>AN2</span>
+          </label>
+          <label class="muted small" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;">
+            <input type="checkbox" id="rebuildAn3" checked />
+            <span>AN3</span>
+          </label>
+        </span>
         <button type="button" id="rebuild" class="warn tightBtn">Rebuild</button>
       </div>
     </div>
@@ -1118,19 +1133,43 @@
         const s = String(sid || '').trim();
         if (!s) return '';
         // "AN 1.1.1" -> "an1.1.1"
-        return s.toLowerCase().replace(/\s+/g, '');
+        const slug = s.toLowerCase().replace(/\s+/g, '');
+        // Local corpus sometimes uses internal subdivisions (e.g. "AN 2.1.2") where SuttaCentral uses a simpler ID.
+        // Map known aliases so external links land on the right discourse.
+        if (slug === 'an2.1.2') return 'an2.2';
+        return slug;
       }
-      function renderReferenceLinks(sid, cid) {
+      function renderReferenceLinks(sid, cid, scUrl, scId) {
         if (!refLinksListEl) return;
         const slug = _sidToScSlug(sid);
         const items = [];
         if (cid) items.push('<div class="muted small">Commentary id: <code>' + esc(String(cid)) + '</code></div>');
         if (sid) items.push('<div class="muted small">Reference: <code>' + esc(String(sid)) + '</code></div>');
-        if (slug) {
-          const u1 = 'https://suttacentral.net/' + encodeURIComponent(slug);
-          const u2 = 'https://suttacentral.net/search?query=' + encodeURIComponent(slug);
-          items.push('<div style="margin-top:6px;"><a href="' + escAttr(u1) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (discourse page)</a></div>');
-          items.push('<div><a href="' + escAttr(u2) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (search)</a></div>');
+        const scUrlClean = (scUrl && String(scUrl).trim()) ? String(scUrl).trim() : '';
+        const scIdClean = (scId && String(scId).trim()) ? String(scId).trim() : '';
+        if (scUrlClean || scIdClean || slug) {
+          const scBase = 'https://suttacentral.net/';
+          const scSlug = encodeURIComponent(scIdClean || slug);
+          const scPlainQuery = 'lang=en&layout=plain&reference=none&notes=asterisk&highlight=false&script=latin';
+
+          let pageUrl = scUrlClean || (scBase + scSlug);
+          // Prefer the plain Sujato English translation view for consistency.
+          // If sc_url is already a translation path, normalize querystring; otherwise construct translation URL.
+          try {
+            const hasTranslationPath = /\/en\/sujato\b/i.test(pageUrl);
+            if (!hasTranslationPath) {
+              // If sc_url is just https://suttacentral.net/an2.2 or similar, rewrite to /en/sujato.
+              pageUrl = scBase + scSlug + '/en/sujato';
+            } else {
+              // Strip any existing query so we can enforce the plain layout.
+              pageUrl = pageUrl.split('?')[0];
+            }
+            pageUrl = pageUrl + '?' + scPlainQuery;
+          } catch (e) {}
+          const searchQ = scIdClean || slug || sid || '';
+          const searchUrl = 'https://suttacentral.net/search?query=' + encodeURIComponent(searchQ);
+          items.push('<div style="margin-top:6px;"><a href="' + escAttr(pageUrl) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (discourse page)</a></div>');
+          items.push('<div><a href="' + escAttr(searchUrl) + '" target="_blank" rel="noopener noreferrer">SuttaCentral (search)</a></div>');
         } else {
           items.push('<div class="muted small">(no external links for this item)</div>');
         }
@@ -1592,6 +1631,11 @@
         readingBodyEl.style.display = 'block';
         const sid = (suttaidForMeta || (data.suttaid || '')).toString().trim();
         const cid = (data.commentary_id || '').toString().trim();
+        const scUrl = (data.sc_url || '').toString().trim();
+        const scId = (data.sc_id || '').toString().trim();
+        // Keep the last-loaded reference detail so the audio player can prefer per-item mappings
+        // stored directly in an*.json (single source of truth).
+        try { window.__lastRefDetail = data; } catch (e) {}
         selectedId = sid;
         _activeCommentaryId = cid || '';
         setCommAudioStatus('');
@@ -1622,7 +1666,7 @@
         // If there is no chain, Links will show "(no chain for this discourse)".
         if (refModeRow) refModeRow.style.display = 'flex';
         renderChainVisual(hasChain ? ch : null);
-        renderReferenceLinks(sid, cid);
+        renderReferenceLinks(sid, cid, scUrl, scId);
         setRefMode(getRefMode());
 
         // If a click requested a jump/highlight, attempt it now that the reference is rendered.
@@ -1681,17 +1725,44 @@
         }
       }
 
+      const rebuildAn1El = document.getElementById('rebuildAn1');
+      const rebuildAn2El = document.getElementById('rebuildAn2');
+      const rebuildAn3El = document.getElementById('rebuildAn3');
+
       async function rebuild() {
+        if (!rebuildBtn) return;
+        const selected = [];
+        if (rebuildAn1El && rebuildAn1El.checked) selected.push('an1');
+        if (rebuildAn2El && rebuildAn2El.checked) selected.push('an2');
+        if (rebuildAn3El && rebuildAn3El.checked) selected.push('an3');
+        if (!selected.length) {
+          setChatStatus('Pick at least one book to rebuild (AN1/AN2/AN3).');
+          return;
+        }
+
         rebuildBtn.disabled = true;
-        setChatStatus('Rebuilding index…');
+        if (rebuildAn1El) rebuildAn1El.disabled = true;
+        if (rebuildAn2El) rebuildAn2El.disabled = true;
+        if (rebuildAn3El) rebuildAn3El.disabled = true;
+
         try {
-          const data = await fetchJson('/api/build?book=all', { method: 'POST' });
-          setChatStatus('Index rebuilt · collection_count=' + data.collection_count);
+          let lastCount = null;
+          for (const b of selected) {
+            setChatStatus('Rebuilding ' + b.toUpperCase() + '…');
+            const data = await fetchJson('/api/build?book=' + encodeURIComponent(b), { method: 'POST' });
+            if (data && typeof data.collection_count === 'number') lastCount = data.collection_count;
+          }
+          const suffix = lastCount != null ? (' · collection_count=' + lastCount) : '';
+          setChatStatus('Index rebuilt: ' + selected.map(x => x.toUpperCase()).join(', ') + suffix);
         } catch (e) {
           setChatStatus('Rebuild error: ' + (e?.message || e));
         }
+
         await refreshIndexStatus();
         rebuildBtn.disabled = false;
+        if (rebuildAn1El) rebuildAn1El.disabled = false;
+        if (rebuildAn2El) rebuildAn2El.disabled = false;
+        if (rebuildAn3El) rebuildAn3El.disabled = false;
       }
 
       async function ask() {
@@ -1902,15 +1973,35 @@
           return;
         }
 
-        const map = await loadAudioMapOnce();
-        const row = map ? map[key] : null;
-        if (!row || typeof row !== 'object') {
-          setCommAudioStatus('No audio boundary mapped for ' + key + ' yet.');
-          return;
+        // Prefer audio mapping embedded in the current reference (from an*.json),
+        // and fall back to aud/audio_map.json for legacy mappings.
+        let file = '';
+        let startS = NaN;
+        let endS = NaN;
+        try {
+          const d = window.__lastRefDetail;
+          if (d && typeof d === 'object') {
+            const af = String(d.aud_file || '').trim();
+            const as = Number(d.aud_start_s);
+            const ae = Number(d.aud_end_s);
+            if (af && Number.isFinite(as) && Number.isFinite(ae)) {
+              file = af;
+              startS = as;
+              endS = ae;
+            }
+          }
+        } catch (e) {}
+        if (!file) {
+          const map = await loadAudioMapOnce();
+          const row = map ? map[key] : null;
+          if (!row || typeof row !== 'object') {
+            setCommAudioStatus('No audio boundary mapped for ' + key + ' yet.');
+            return;
+          }
+          file = String(row.file || '').trim();
+          startS = Number(row.start_s);
+          endS = Number(row.end_s);
         }
-        const file = String(row.file || '').trim();
-        const startS = Number(row.start_s);
-        const endS = Number(row.end_s);
         if (!file || !Number.isFinite(startS) || !Number.isFinite(endS) || endS <= startS) {
           setCommAudioStatus('Invalid audio mapping for ' + key + '.');
           return;

@@ -150,6 +150,21 @@ def _extract_records_fallback(raw: str) -> List[Dict[str, str]]:
                 "sutta": (cur.get("sutta") or "").strip(),
                 "commentry": comm,
             }
+            sc_id = (cur.get("sc_id") or "").strip()
+            sc_url = (cur.get("sc_url") or "").strip()
+            if sc_id:
+                row["sc_id"] = sc_id
+            if sc_url:
+                row["sc_url"] = sc_url
+            aud_file = (cur.get("aud_file") or "").strip()
+            aud_start = (cur.get("aud_start_s") or "").strip()
+            aud_end = (cur.get("aud_end_s") or "").strip()
+            if aud_file:
+                row["aud_file"] = aud_file
+            if aud_start:
+                row["aud_start_s"] = aud_start
+            if aud_end:
+                row["aud_end_s"] = aud_end
             cid = (cur.get("commentary_id") or "").strip()
             if cid:
                 row["commentary_id"] = cid
@@ -192,6 +207,36 @@ def _extract_records_fallback(raw: str) -> List[Dict[str, str]]:
             m_id = rgx.search(r'"commentary_id"\s*:\s*"([^"]*)"', ln)
             if m_id:
                 cur["commentary_id"] = m_id.group(1)
+            continue
+
+        if '"sc_id"' in ln:
+            m_sc = rgx.search(r'"sc_id"\s*:\s*"([^"]*)"', ln)
+            if m_sc:
+                cur["sc_id"] = m_sc.group(1)
+            continue
+
+        if '"sc_url"' in ln:
+            m_sc = rgx.search(r'"sc_url"\s*:\s*"([^"]*)"', ln)
+            if m_sc:
+                cur["sc_url"] = m_sc.group(1)
+            continue
+
+        if '"aud_file"' in ln:
+            m_af = rgx.search(r'"aud_file"\s*:\s*"([^"]*)"', ln)
+            if m_af:
+                cur["aud_file"] = m_af.group(1)
+            continue
+
+        if '"aud_start_s"' in ln:
+            m_as = rgx.search(r'"aud_start_s"\s*:\s*([0-9]+(?:\.[0-9]+)?)', ln)
+            if m_as:
+                cur["aud_start_s"] = m_as.group(1)
+            continue
+
+        if '"aud_end_s"' in ln:
+            m_ae = rgx.search(r'"aud_end_s"\s*:\s*([0-9]+(?:\.[0-9]+)?)', ln)
+            if m_ae:
+                cur["aud_end_s"] = m_ae.group(1)
             continue
 
         m = rgx.search(r'"sutta"\s*:\s*"(.*)"\s*,?\s*$', ln)
@@ -515,7 +560,9 @@ def build_an3_index() -> int:
 
 
 def main() -> None:
-    build_an1_index()
+    # Intentionally do nothing here; CLI entrypoint below controls what gets built.
+    # Keeping this function avoids breaking older imports/tests that may call main().
+    return None
 
 
 if __name__ == "__main__":
@@ -525,11 +572,11 @@ if __name__ == "__main__":
     ap.add_argument(
         "--book",
         choices=["an1", "an2", "an3", "all"],
-        default="an1",
-        help="Which index to build (default: an1).",
+        default="all",
+        help="Which index to build (default: all = an2+an3; an1 is opt-in).",
     )
     args = ap.parse_args()
-    if args.book in ("an1", "all"):
+    if args.book in ("an1",):
         build_an1_index()
     if args.book in ("an2", "all"):
         build_an2_index()

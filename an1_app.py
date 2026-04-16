@@ -459,7 +459,7 @@ class QueryRequest(BaseModel):
     use_llm: bool = Field(default=True)
     book: str = Field(
         default="all",
-        description="Books: an1/an2/an3/all. Local Chroma searches requested books when indexes exist.",
+        description="Books: an1/an2/an3/all. NOTE: in this repo, all = an2+an3 (an1 is opt-in).",
     )
 
     @field_validator("book")
@@ -501,6 +501,11 @@ class ItemDetail(BaseModel):
     sutta: str
     commentry: str = ""
     commentary_id: str = ""
+    sc_id: str = ""
+    sc_url: str = ""
+    aud_file: str = ""
+    aud_start_s: float = 0.0
+    aud_end_s: float = 0.0
     chain: Optional[Dict[str, Any]] = None
 
 
@@ -942,31 +947,60 @@ def _retrieve(embed_model: Any, collection: Any, query: str, k: int) -> List[Chu
     return _dedupe_chunks_keep_order(top)[:14]
 
 
-def _retrieve_merged_local(embed_model: Any, query: str, k: int) -> List[Chunk]:
-    """Retrieve from AN1 + AN2 + AN3 Chroma with roughly equal budget, then merge rank + pair-inject."""
-    # Split k roughly equally across available books
-    k1 = max(1, (k + 2) // 3)
-    k2 = max(1, (k + 1) // 3)
-    k3 = max(1, k - k1 - k2)
+def _retrieve_merged_local(embed_model: Any, query: str, k: int, *, book: str = "all") -> List[Chunk]:
+    """
+    Retrieve from local Chroma for the requested book(s), then merge rank + pair-inject.
+
+    Convention in this repo:
+      - book=all searches AN2+AN3 only (AN1 is opt-in).
+      - book=an1 searches AN1 only.
+    """
+    want = (book or "all").strip().lower()
+    if want not in ("an1", "an2", "an3", "all"):
+        want = "all"
+
+    # Decide which books to include
+    include: List[str]
+    if want == "all":
+        include = ["an2", "an3"]
+    else:
+        include = [want]
+
+    # Split k roughly equally across included books
+    n = max(1, len(include))
+    base, rem = divmod(max(1, int(k)), n)
+    k_by: Dict[str, int] = {b: base for b in include}
+    for i in range(rem):
+        k_by[include[i]] += 1
+
     out1: List[Chunk] = []
     out2: List[Chunk] = []
     out3: List[Chunk] = []
-    if PERSIST_DIR.exists():
+    if "an1" in include and PERSIST_DIR.exists():
         try:
             col1 = _get_collection("an1")
-            out1 = [c.model_copy(update={"book": "an1"}) for c in _retrieve(embed_model, col1, query, k1)]
+            out1 = [
+                c.model_copy(update={"book": "an1"})
+                for c in _retrieve(embed_model, col1, query, k_by.get("an1", 1))
+            ]
         except Exception:
             pass
-    if PERSIST_AN2_DIR.exists():
+    if "an2" in include and PERSIST_AN2_DIR.exists():
         try:
             col2 = _get_collection("an2")
-            out2 = [c.model_copy(update={"book": "an2"}) for c in _retrieve(embed_model, col2, query, k2)]
+            out2 = [
+                c.model_copy(update={"book": "an2"})
+                for c in _retrieve(embed_model, col2, query, k_by.get("an2", 1))
+            ]
         except Exception:
             pass
-    if PERSIST_AN3_DIR.exists():
+    if "an3" in include and PERSIST_AN3_DIR.exists():
         try:
             col3 = _get_collection("an3")
-            out3 = [c.model_copy(update={"book": "an3"}) for c in _retrieve(embed_model, col3, query, k3)]
+            out3 = [
+                c.model_copy(update={"book": "an3"})
+                for c in _retrieve(embed_model, col3, query, k_by.get("an3", 1))
+            ]
         except Exception:
             pass
     merged = _dedupe_chunks_keep_order(out1 + out2 + out3)
@@ -1055,17 +1089,33 @@ def _vertex_quota_pick(sorted_chunks: List[Chunk], k: int) -> List[Chunk]:
     return picked[:k]
 
 
-def _retrieve_vertex(bundle: Dict[str, Any], query: str, k: int) -> List[Chunk]:
+def _retrieve_vertex(bundle: Dict[str, Any], query: str, k: int, *, book: str = "all") -> List[Chunk]:
     """Same ranking heuristics as _retrieve, but vector search + lexical scan over a Vertex bundle (no Chroma)."""
+    want = (book or "all").strip().lower()
+    if want not in ("an1", "an2", "an3", "all"):
+        want = "all"
+    include = ["an2", "an3"] if want == "all" else [want]
+
     rows_all = vx.bundle_chunk_rows(bundle)
     if not rows_all:
         return []
 
+    # Filter by requested books. Convention: missing/unknown book counts as an1.
+    rows: List[Dict[str, Any]] = []
+    for r in rows_all:
+        if not isinstance(r, dict):
+            continue
+        bk = str(r.get("book") or "").strip().lower()
+        if bk not in ("an1", "an2", "an3"):
+            bk = "an1"
+        if bk in include:
+            rows.append(r)
+    if not rows:
+        return []
+
     q_emb = vx.embed_texts_vertex([query])[0]
     out: List[Chunk] = []
-    for row in rows_all:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         emb = row.get("embedding")
         if not isinstance(emb, list) or not emb:
             continue
@@ -1094,9 +1144,7 @@ def _retrieve_vertex(bundle: Dict[str, Any], query: str, k: int) -> List[Chunk]:
     seen_keys = set((c.source, c.suttaid, c.book, c.text[:200]) for c in out)
     for t in merged_terms:
         tl = t.lower()
-        for row in rows_all:
-            if not isinstance(row, dict):
-                continue
+        for row in rows:
             doc = str(row.get("text") or "")
             if tl not in doc.lower():
                 continue
@@ -1487,6 +1535,17 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                 sutta = str(obj.get("sutta") or "").strip()
                 comm = _commentary_body(obj)
                 cid = ("c" + sid) if sid else ""
+                sc_id = str(obj.get("sc_id") or "").strip()
+                sc_url = str(obj.get("sc_url") or "").strip()
+                aud_file = str(obj.get("aud_file") or "").strip()
+                try:
+                    aud_start_s = float(obj.get("aud_start_s") or 0.0)
+                except Exception:
+                    aud_start_s = 0.0
+                try:
+                    aud_end_s = float(obj.get("aud_end_s") or 0.0)
+                except Exception:
+                    aud_end_s = 0.0
                 ch = obj.get("chain")
                 chain_dict = ch if isinstance(ch, dict) else None
                 if not sid or not sutta:
@@ -1497,6 +1556,11 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                         sutta=sutta,
                         commentry=comm,
                         commentary_id=cid,
+                        sc_id=sc_id,
+                        sc_url=sc_url,
+                        aud_file=aud_file,
+                        aud_start_s=aud_start_s,
+                        aud_end_s=aud_end_s,
                         chain=chain_dict,
                     )
                 )
@@ -1507,6 +1571,17 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                 cid = _normalize_commentary_id(obj.get("commentary_id") or "")
                 if not cid and sid:
                     cid = _normalize_commentary_id("c" + sid)
+                sc_id = str(obj.get("sc_id") or "").strip()
+                sc_url = str(obj.get("sc_url") or "").strip()
+                aud_file = str(obj.get("aud_file") or "").strip()
+                try:
+                    aud_start_s = float(obj.get("aud_start_s") or 0.0)
+                except Exception:
+                    aud_start_s = 0.0
+                try:
+                    aud_end_s = float(obj.get("aud_end_s") or 0.0)
+                except Exception:
+                    aud_end_s = 0.0
                 ch = obj.get("chain")
                 chain_dict = ch if isinstance(ch, dict) else None
                 if not sid or not sutta:
@@ -1517,6 +1592,11 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                         sutta=sutta,
                         commentry=comm,
                         commentary_id=cid,
+                        sc_id=sc_id,
+                        sc_url=sc_url,
+                        aud_file=aud_file,
+                        aud_start_s=aud_start_s,
+                        aud_end_s=aud_end_s,
                         chain=chain_dict,
                     )
                 )
@@ -2067,7 +2147,7 @@ def api_build(
     request: Request,
     book: str = Query(
         "all",
-        description="Build: all (AN1+AN2), an1 only, or an2 only (local Chroma). Vertex path rebuilds local Chroma + vertex_corpus shards (manifest); optional AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS.",
+        description="Build: all (AN2+AN3), an1 only (opt-in), an2 only, or an3 only (local Chroma). Vertex path rebuilds local Chroma + vertex_corpus shards (manifest); optional AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS.",
     ),
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> BuildResponse:
@@ -2080,7 +2160,6 @@ def api_build(
             if vx.an1_vertex_enabled():
                 from an1_build_vertex_bundle import write_vertex_corpus
 
-                an1_build.build_an1_index()
                 an1_build.build_an2_index()
                 an1_build.build_an3_index()
                 corpus_dir = PERSIST_DIR / "vertex_corpus"
@@ -2110,7 +2189,6 @@ def api_build(
                 _invalidate_collection_cache("an1")
                 return BuildResponse(ok=True, collection_count=_collection_count_safe("an1"))
 
-            an1_build.build_an1_index()
             if AN2_PATH.exists():
                 an1_build.build_an2_index()
             if AN3_PATH.exists():
@@ -2136,7 +2214,7 @@ def api_query(
     with _lock:
         # Respect client-provided settings; do not force LLM usage.
         book = (req.book or "all").strip().lower()
-        if book not in ("an1", "an2", "all"):
+        if book not in ("an1", "an2", "an3", "all"):
             book = "all"
         _dbg(
             "H4",
@@ -2175,7 +2253,7 @@ def api_query(
                     detail=f"Vertex bundle not available: {e}. Rebuild (POST /api/build) or set AN1_VERTEX_BUNDLE_GCS_URI.",
                 ) from e
             try:
-                chunks = _retrieve_vertex(bundle, req.question, req.k)
+                chunks = _retrieve_vertex(bundle, req.question, req.k, book=book)
             except Exception as e:
                 _dbg("H2", "an1_app.py:api_query", "Vertex retrieval failed", {"error": str(e)})
                 raise HTTPException(status_code=502, detail=f"Vertex retrieval failed: {e}") from e
@@ -2214,7 +2292,7 @@ def api_query(
         chunks: List[Chunk] = []
         try:
             embed_model = _get_embed_model()
-            chunks = _retrieve_merged_local(embed_model, req.question, req.k)
+            chunks = _retrieve_merged_local(embed_model, req.question, req.k, book=book)
         except Exception as e:
             # Most common cause: HF hub download retries (503/504) making the UI appear "stuck".
             _dbg(

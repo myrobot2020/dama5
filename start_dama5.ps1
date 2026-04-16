@@ -11,6 +11,10 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
     & .\.venv\Scripts\Activate.ps1
 }
 
+# Local dev should default to Chroma + Ollama. If you want Vertex, set DAMA_RUNTIME=cloud
+# or AN1_USE_VERTEX/DAMA_USE_VERTEX explicitly in your environment.
+if (-not $env:DAMA_RUNTIME) { $env:DAMA_RUNTIME = "local" }
+
 $port = if ($env:PORT) { $env:PORT } else { 8000 }
 
 if ($Diy) {

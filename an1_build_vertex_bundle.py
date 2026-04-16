@@ -148,13 +148,14 @@ def build_shard_dict(book: str) -> Dict[str, Any]:
 
 def write_vertex_corpus(out_dir: Path, *, upload_base_gcs: str = "") -> Path:
     """
-    Write manifest.json + shard_an1.json [+ shard_an2.json] under out_dir.
+    Write manifest.json + shard_an2.json [+ shard_an3.json] under out_dir.
     If upload_base_gcs is set (e.g. gs://bucket/prefix/), upload each file to that prefix.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     em = vx.embedding_model_name()
     shard_entries: List[Dict[str, Any]] = []
-    for book in ("an1", "an2", "an3"):
+    # AN1 is intentionally excluded from indexing/corpus by default in this repo.
+    for book in ("an2", "an3"):
         if book == "an2" and not AN2_PATH.exists():
             continue
         if book == "an3" and not AN3_PATH.exists():
@@ -184,14 +185,17 @@ def write_vertex_corpus(out_dir: Path, *, upload_base_gcs: str = "") -> Path:
 
 
 def build_bundle_dict() -> Dict[str, Any]:
-    if not AN1_PATH.exists():
-        raise FileNotFoundError(f"Missing an1.json at: {AN1_PATH}")
-
-    specs: List[Tuple[str, str, str, str, str, str]] = specs_for_book("an1")
+    # Monolithic legacy bundle: build only books that exist, excluding AN1 by default.
+    specs: List[Tuple[str, str, str, str, str, str]] = []
     if AN2_PATH.exists():
         specs.extend(specs_for_book("an2"))
     if AN3_PATH.exists():
         specs.extend(specs_for_book("an3"))
+    if not specs:
+        raise FileNotFoundError(
+            f"No corpus JSONs found to bundle (expected at least an2.json or an3.json). "
+            f"Checked: {AN2_PATH}, {AN3_PATH}"
+        )
 
     texts = [s[5] for s in specs]
     vectors = vx.embed_texts_vertex(texts)
