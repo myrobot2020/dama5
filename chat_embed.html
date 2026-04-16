@@ -245,6 +245,34 @@
         border-top: 1px solid var(--border2);
         background: rgba(0,0,0,.12);
       }
+      .reading details.scBlock {
+        margin-top: 10px;
+        border: 1px solid var(--border2);
+        border-radius: 12px;
+        background: rgba(0,0,0,.14);
+        overflow: hidden;
+      }
+      .reading details.scBlock > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: var(--muted);
+        user-select: none;
+      }
+      .reading details.scBlock > summary::-webkit-details-marker { display: none; }
+      .reading details.scBlock > summary::before { content: '▸'; margin-right: 6px; color: #a5b4fc; }
+      .reading details.scBlock[open] > summary::before { content: '▾'; }
+      .reading .scBody {
+        padding: 8px 10px;
+        border-top: 1px solid var(--border2);
+        color: #dbe6ff;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: rgba(0,0,0,.12);
+      }
       .reading .pastQ { color: #dbe6ff; white-space: pre-wrap; word-break: break-word; margin-top: 8px; font-size: 12px; line-height: 1.4; }
       .reading .pastA { color: #dbe6ff; white-space: pre-wrap; word-break: break-word; margin-top: 8px; font-size: 12px; line-height: 1.4; opacity: .96; }
       .muted { color: var(--muted); font-size: 12px; }
@@ -1139,7 +1167,7 @@
         if (slug === 'an2.1.2') return 'an2.2';
         return slug;
       }
-      function renderReferenceLinks(sid, cid, scUrl, scId) {
+      function renderReferenceLinks(sid, cid, scUrl, scId, scSuttaText) {
         if (!refLinksListEl) return;
         const slug = _sidToScSlug(sid);
         const items = [];
@@ -1173,7 +1201,44 @@
         } else {
           items.push('<div class="muted small">(no external links for this item)</div>');
         }
+
+        const scTxt = (scSuttaText != null ? String(scSuttaText) : '').trim();
+        if (scTxt) {
+          const MAX_PREVIEW = 900;
+          const preview = scTxt.length > MAX_PREVIEW ? (scTxt.slice(0, MAX_PREVIEW) + '…') : scTxt;
+          items.push(
+            '<details class="scBlock">' +
+              '<summary>SuttaCentral text</summary>' +
+              '<div class="scBody">' + esc(preview) + '</div>' +
+            '</details>'
+          );
+        }
         refLinksListEl.innerHTML = items.join('');
+
+        // Always provide an in-panel full-text view via iframe (works even when sc_sutta is missing).
+        // This avoids CORS/HTML parsing issues and keeps the plain layout URL used above.
+        if (!scTxt && (scUrlClean || scIdClean || slug)) {
+          try {
+            const scBase = 'https://suttacentral.net/';
+            const scSlug = encodeURIComponent(scIdClean || slug);
+            const scPlainQuery = 'lang=en&layout=plain&reference=none&notes=asterisk&highlight=false&script=latin';
+            let pageUrl = scUrlClean || (scBase + scSlug);
+            const hasTranslationPath = /\/en\/sujato\b/i.test(pageUrl);
+            if (!hasTranslationPath) pageUrl = scBase + scSlug + '/en/sujato';
+            else pageUrl = pageUrl.split('?')[0];
+            pageUrl = pageUrl + '?' + scPlainQuery;
+            const iframeHtml =
+              '<details class="scBlock">' +
+                '<summary>SuttaCentral text (embedded)</summary>' +
+                '<div class="scBody" style="padding:0;">' +
+                  '<iframe src="' + escAttr(pageUrl) + '" ' +
+                    'style="width:100%;height:60vh;border:0;background:transparent;" ' +
+                    'referrerpolicy="no-referrer" loading="lazy"></iframe>' +
+                '</div>' +
+              '</details>';
+            refLinksListEl.insertAdjacentHTML('beforeend', iframeHtml);
+          } catch (e) {}
+        }
       }
 
       let _gongAudio = null;
@@ -1633,6 +1698,7 @@
         const cid = (data.commentary_id || '').toString().trim();
         const scUrl = (data.sc_url || '').toString().trim();
         const scId = (data.sc_id || '').toString().trim();
+        const scSutta = (data.sc_sutta || '').toString();
         // Keep the last-loaded reference detail so the audio player can prefer per-item mappings
         // stored directly in an*.json (single source of truth).
         try { window.__lastRefDetail = data; } catch (e) {}
@@ -1666,7 +1732,7 @@
         // If there is no chain, Links will show "(no chain for this discourse)".
         if (refModeRow) refModeRow.style.display = 'flex';
         renderChainVisual(hasChain ? ch : null);
-        renderReferenceLinks(sid, cid, scUrl, scId);
+        renderReferenceLinks(sid, cid, scUrl, scId, scSutta);
         setRefMode(getRefMode());
 
         // If a click requested a jump/highlight, attempt it now that the reference is rendered.
@@ -1830,6 +1896,7 @@
                 const sid = (c.suttaid || '').toString().trim();
                 const cid = (c.commentary_id || '').toString().trim();
                 const kind = ((c.kind || '').toString().trim() || 'unknown').toLowerCase();
+                if (kind === 'chain') continue; // CHAIN is Reference-only UI metadata, never a chat chunk.
                 const numsFrom = (s) => {
                   const m = String(s || '').match(/(\d+(?:\.\d+)*)/);
                   return m ? m[1] : '';

@@ -7,6 +7,7 @@ import uuid
 import zlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Optional, Set, Tuple
 
@@ -86,6 +87,12 @@ OLLAMA_MODEL = "mistral:instruct"
 
 # Reuse HTTP connections (Ollama + metadata server, etc.)
 _HTTP = requests.Session()
+
+# Cache for SuttaCentral fetched plain-text (keyed by sc_slug, e.g. "an2.2/en/sujato?...").
+_SC_TEXT_CACHE: Dict[str, str] = {}
+
+# Cache raw JSON metadata for Reference panel (sc_id/sc_url/sc_sutta/audio).
+_RAW_META_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 # Bumped when RAG/LLM behavior changes (shown in GET /api/index_status so you know the server reloaded).
 AN1_APP_BUILD = "2026-04-13-gong-autoplay-gesture"
@@ -503,6 +510,7 @@ class ItemDetail(BaseModel):
     commentary_id: str = ""
     sc_id: str = ""
     sc_url: str = ""
+    sc_sutta: str = ""
     aud_file: str = ""
     aud_start_s: float = 0.0
     aud_end_s: float = 0.0
@@ -678,14 +686,9 @@ def _lexical_retrieve_from_items(query: str, k: int, *, book: str = "all") -> Li
             s_comm = score_blob(f"{sid}\n{it.commentary_id}\n{comm}")
             if s_comm > 0:
                 scored.append((s_comm, bk, "commentary", it))
-        if it.chain:
-            try:
-                chain_blob = json.dumps(it.chain, ensure_ascii=False)
-            except Exception:
-                chain_blob = str(it.chain)
-            s_chain = score_blob(f"{sid}\n{chain_blob}")
-            if s_chain > 0:
-                scored.append((s_chain, bk, "chain", it))
+        # NOTE: We deliberately do NOT retrieve CHAIN as a chat chunk.
+        # CHAIN is only displayed in the Reference Links panel (item metadata),
+        # never in chat answers or retrieval-only summaries.
 
     scored.sort(key=lambda x: (-x[0], x[1], x[2], x[3].suttaid))
 
@@ -715,27 +718,118 @@ def _lexical_retrieve_from_items(query: str, k: int, *, book: str = "all") -> Li
                     text="TEACHER COMMENTARY:\n" + _preview_text(it.commentry),
                 )
             )
-        else:
-            try:
-                chain_blob = json.dumps(it.chain or {}, ensure_ascii=False, indent=2)
-            except Exception:
-                chain_blob = str(it.chain)
-            out.append(
-                Chunk(
-                    source="lexical_fallback",
-                    suttaid=it.suttaid,
-                    commentary_id=it.commentary_id or "",
-                    kind="chain",
-                    book=bk,
-                    distance=None,
-                    text="CHAIN:\n" + _preview_text(chain_blob, limit=900),
-                )
-            )
+        # No 'chain' chunks emitted.
 
         if len(out) >= max(6, min(14, k * 2)):
             break
 
     return _dedupe_chunks_keep_order(out)[:14]
+
+
+def _extract_body_from_chunk_text(kind: str, text: str) -> str:
+    """Extract the sutta/commentary body from a retrieval chunk payload."""
+    t = str(text or "")
+    k = str(kind or "").strip().lower()
+    if k == "commentary":
+        i = t.find("TEACHER COMMENTARY:\n")
+        if i >= 0:
+            return t[i + len("TEACHER COMMENTARY:\n") :].strip()
+        j = t.find("TEACHER COMMENTARY:")
+        if j >= 0:
+            return t[j + len("TEACHER COMMENTARY:") :].strip()
+        return t.strip()
+    # sutta
+    i = t.find("SUTTA:\n")
+    if i >= 0:
+        return t[i + len("SUTTA:\n") :].strip()
+    j = t.find("SUTTA:")
+    if j >= 0:
+        return t[j + len("SUTTA:") :].strip()
+    return t.strip()
+
+
+_CITE_RE = re.compile(r"\b(cAN|AN)\s*\d+(?:\.\d+)*\b", re.I)
+
+
+def _norm_an_ref(raw: str) -> str:
+    m = re.search(r"(\d+(?:\.\d+)*)", str(raw or ""))
+    return f"AN {m.group(1)}" if m else ""
+
+
+def _norm_can_ref(raw: str, *, fallback_suttaid: str = "") -> str:
+    s = str(raw or "").strip()
+    m = re.search(r"(\d+(?:\.\d+)*)", s)
+    if not m and fallback_suttaid:
+        m = re.search(r"(\d+(?:\.\d+)*)", str(fallback_suttaid))
+    return f"cAN {m.group(1)}" if m else ""
+
+
+def _filter_chat_chunks(chunks: List[Chunk]) -> List[Chunk]:
+    """Drop CHAIN chunks and empty commentary chunks so chat never cites empty commentary."""
+    out: List[Chunk] = []
+    for c in chunks or []:
+        k = (c.kind or "").strip().lower()
+        if k == "chain":
+            continue
+        if k == "commentary":
+            body = _extract_body_from_chunk_text("commentary", c.text or "")
+            if not body.strip():
+                continue
+        out.append(c)
+    return out
+
+
+def _allowlists_from_chunks(chunks: List[Chunk]) -> Tuple[Set[str], Set[str]]:
+    allowed_an: Set[str] = set()
+    allowed_can: Set[str] = set()
+    for c in chunks or []:
+        k = (c.kind or "").strip().lower()
+        if k == "sutta":
+            r = _norm_an_ref(c.suttaid or "")
+            if r:
+                allowed_an.add(r)
+        elif k == "commentary":
+            # only allow cAN if chunk body is non-empty (enforced by _filter_chat_chunks)
+            r = _norm_can_ref(c.commentary_id or "", fallback_suttaid=c.suttaid or "")
+            if r:
+                allowed_can.add(r)
+    return allowed_an, allowed_can
+
+
+def _illegal_citations(answer: str, allowed_an: Set[str], allowed_can: Set[str]) -> List[str]:
+    bad: List[str] = []
+    for m in _CITE_RE.finditer(str(answer or "")):
+        raw = m.group(0)
+        if raw.lower().startswith("can"):
+            ref = _norm_can_ref(raw)
+            if ref and ref not in allowed_can:
+                bad.append(ref)
+        else:
+            ref = _norm_an_ref(raw)
+            if ref and ref not in allowed_an:
+                bad.append(ref)
+    # preserve order, de-dupe
+    return list(dict.fromkeys(bad))
+
+
+def _synthesize_retrieval_only_answer(chunks: List[Chunk]) -> str:
+    top = list(chunks or [])[:6]
+    if not top:
+        return "(no answer)"
+    lines = ["Retrieval results (no LLM):", ""]
+    for c in top:
+        kind = (c.kind or "").strip().lower()
+        if kind == "chain":
+            continue
+        sid = str(c.suttaid or "").strip()
+        cid = str(c.commentary_id or "").strip()
+        snippet = re.sub(r"\s+", " ", str(c.text or "")).strip()[:220]
+        if kind == "commentary":
+            cite = _norm_can_ref(cid, fallback_suttaid=sid)
+        else:
+            cite = _norm_an_ref(sid)
+        lines.append("- " + snippet + (f" ({cite})" if cite else ""))
+    return "\n".join(lines).strip()
 
 
 _STOPWORDS = frozenset(
@@ -1287,7 +1381,15 @@ def _format_llm_passage(idx: int, c: Chunk) -> str:
     )
 
 
-def _llm_system_and_user_blocks(query: str, balanced: List[Chunk], *, book: str = "an1") -> Tuple[str, str]:
+def _llm_system_and_user_blocks(
+    query: str,
+    balanced: List[Chunk],
+    *,
+    book: str = "an1",
+    allowed_an: Optional[Set[str]] = None,
+    allowed_can: Optional[Set[str]] = None,
+    extra_user_instructions: str = "",
+) -> Tuple[str, str]:
     numbered = "\n\n".join(_format_llm_passage(i + 1, c) for i, c in enumerate(balanced))
     if _norm_book(book) == "an2":
         system = (
@@ -1311,9 +1413,19 @@ def _llm_system_and_user_blocks(query: str, balanced: List[Chunk], *, book: str 
             "\"The provided excerpts do not contain information to answer this question.\"\n"
             "6. Do NOT guess or use outside knowledge."
         )
+        allow = ""
+        if allowed_an or allowed_can:
+            allow = "\n\nALLOWED CITATIONS (strict):\n"
+            if allowed_an:
+                allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
+            if allowed_can:
+                allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
+            allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
+        extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
         user = (
             f"Question: {query}\n\nPASSAGES (suttaid order; headers for you only):\n{numbered}\n\n"
             "Answer concisely with (AN …)/(cAN …) citations; use CHAIN only as conceptual context, not as quoted scripture."
+            f"{allow}{extra}"
         )
         return system, user
 
@@ -1350,16 +1462,33 @@ def _llm_system_and_user_blocks(query: str, balanced: List[Chunk], *, book: str 
         "\"The provided excerpts do not contain information to answer this question.\"\n"
         "11. Do NOT guess or use outside knowledge."
     )
+    allow = ""
+    if allowed_an or allowed_can:
+        allow = "\n\nALLOWED CITATIONS (strict):\n"
+        if allowed_an:
+            allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
+        if allowed_can:
+            allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
+        allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
+    extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
     user = (
         f"Question: {query}\n\nPASSAGES (grouped by suttaid: sutta for an id, then teacher notes for that id; "
         f"headers for you only — do not echo them):\n{numbered}\n\n"
         "Answer concisely with (AN …)/(cAN …) citations; use CHAIN only as conceptual context, not as quoted scripture; "
         "avoid unrelated cross-citations; never call teacher notes the sutta."
+        f"{allow}{extra}"
     )
     return system, user
 
 
-def _llm_vertex_mixed_blocks(query: str, balanced: List[Chunk]) -> Tuple[str, str]:
+def _llm_vertex_mixed_blocks(
+    query: str,
+    balanced: List[Chunk],
+    *,
+    allowed_an: Optional[Set[str]] = None,
+    allowed_can: Optional[Set[str]] = None,
+    extra_user_instructions: str = "",
+) -> Tuple[str, str]:
     numbered = "\n\n".join(_format_llm_passage(i + 1, c) for i, c in enumerate(balanced))
     system = (
         "You are a friendly, conversational assistant answering from AN1 and/or AN2 (Anguttara Nikāya) "
@@ -1376,23 +1505,48 @@ def _llm_vertex_mixed_blocks(query: str, balanced: List[Chunk]) -> Tuple[str, st
         "\"The provided excerpts do not contain information to answer this question.\"\n"
         "4. Do NOT guess or use outside knowledge."
     )
+    allow = ""
+    if allowed_an or allowed_can:
+        allow = "\n\nALLOWED CITATIONS (strict):\n"
+        if allowed_an:
+            allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
+        if allowed_can:
+            allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
+        allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
+    extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
     user = (
         f"Question: {query}\n\nPASSAGES (headers for you only):\n{numbered}\n\n"
         "Answer concisely with correct (AN …)/(cAN …) citations; use CHAIN only as non-quoted context when present."
+        f"{allow}{extra}"
     )
     return system, user
 
 
-def _call_llm_vertex(query: str, chunks: List[Chunk]) -> str:
-    include_chain = any((c.kind or "").lower() == "chain" for c in chunks)
-    balanced = _chunks_for_llm_paired_by_suttaid(chunks, max_n=10, include_chain=include_chain)
+def _call_llm_vertex(
+    query: str,
+    chunks: List[Chunk],
+    *,
+    allowed_an: Optional[Set[str]] = None,
+    allowed_can: Optional[Set[str]] = None,
+    extra_user_instructions: str = "",
+) -> str:
+    balanced = _chunks_for_llm_paired_by_suttaid(chunks, max_n=10, include_chain=False)
     if not balanced:
         return "No passages were retrieved for this question. Try Rebuild or rephrase."
     has_an2 = any((c.book or "").lower() == "an2" for c in balanced)
     if has_an2:
-        system, user = _llm_vertex_mixed_blocks(query, balanced)
+        system, user = _llm_vertex_mixed_blocks(
+            query, balanced, allowed_an=allowed_an, allowed_can=allowed_can, extra_user_instructions=extra_user_instructions
+        )
     else:
-        system, user = _llm_system_and_user_blocks(query, balanced, book="an1")
+        system, user = _llm_system_and_user_blocks(
+            query,
+            balanced,
+            book="an1",
+            allowed_an=allowed_an,
+            allowed_can=allowed_can,
+            extra_user_instructions=extra_user_instructions,
+        )
     return _sanitize_chat_answer_light(vx.gemini_generate(system, user, temperature=0.2))
 
 
@@ -1404,22 +1558,42 @@ def _vertex_llm_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-def _call_llm(query: str, chunks: List[Chunk], *, book: str = "an1") -> str:
+def _call_llm(
+    query: str,
+    chunks: List[Chunk],
+    *,
+    book: str = "an1",
+    allowed_an: Optional[Set[str]] = None,
+    allowed_can: Optional[Set[str]] = None,
+    extra_user_instructions: str = "",
+) -> str:
     if vx.an1_vertex_enabled() or _vertex_llm_enabled():
-        return _call_llm_vertex(query, chunks)
+        return _call_llm_vertex(
+            query,
+            chunks,
+            allowed_an=allowed_an,
+            allowed_can=allowed_can,
+            extra_user_instructions=extra_user_instructions,
+        )
 
-    include_chain = any((c.kind or "").lower() == "chain" for c in chunks)
-    balanced = _chunks_for_llm_paired_by_suttaid(
-        chunks, max_n=10, include_chain=include_chain
-    )
+    balanced = _chunks_for_llm_paired_by_suttaid(chunks, max_n=10, include_chain=False)
     if not balanced:
         return "No passages were retrieved for this question. Try Rebuild or rephrase."
     has_an2 = any((c.book or "").lower() == "an2" for c in balanced)
     if has_an2:
-        system, user = _llm_vertex_mixed_blocks(query, balanced)
+        system, user = _llm_vertex_mixed_blocks(
+            query, balanced, allowed_an=allowed_an, allowed_can=allowed_can, extra_user_instructions=extra_user_instructions
+        )
     else:
         b = _norm_book(book)
-        system, user = _llm_system_and_user_blocks(query, balanced, book=b if b == "an2" else "an1")
+        system, user = _llm_system_and_user_blocks(
+            query,
+            balanced,
+            book=b if b == "an2" else "an1",
+            allowed_an=allowed_an,
+            allowed_can=allowed_can,
+            extra_user_instructions=extra_user_instructions,
+        )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _sanitize_chat_answer_light(_ollama_chat(messages, num_ctx=8192, timeout=300))
 
@@ -1534,9 +1708,13 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                 sid = _normalize_suttaid_an2(obj.get("sutta_id") or obj.get("suttaid"))
                 sutta = str(obj.get("sutta") or "").strip()
                 comm = _commentary_body(obj)
-                cid = ("c" + sid) if sid else ""
+                # Prefer explicit commentary_id (e.g. "cAN 2.1.2") if present in JSON; else derive from sutta id.
+                cid = _normalize_commentary_id(obj.get("commentary_id") or "") if sid else ""
+                if not cid and sid:
+                    cid = _normalize_commentary_id("c" + sid)
                 sc_id = str(obj.get("sc_id") or "").strip()
                 sc_url = str(obj.get("sc_url") or "").strip()
+                sc_sutta = str(obj.get("sc_sutta") or "").strip()
                 aud_file = str(obj.get("aud_file") or "").strip()
                 try:
                     aud_start_s = float(obj.get("aud_start_s") or 0.0)
@@ -1558,6 +1736,7 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                         commentary_id=cid,
                         sc_id=sc_id,
                         sc_url=sc_url,
+                        sc_sutta=sc_sutta,
                         aud_file=aud_file,
                         aud_start_s=aud_start_s,
                         aud_end_s=aud_end_s,
@@ -1573,6 +1752,7 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                     cid = _normalize_commentary_id("c" + sid)
                 sc_id = str(obj.get("sc_id") or "").strip()
                 sc_url = str(obj.get("sc_url") or "").strip()
+                sc_sutta = str(obj.get("sc_sutta") or "").strip()
                 aud_file = str(obj.get("aud_file") or "").strip()
                 try:
                     aud_start_s = float(obj.get("aud_start_s") or 0.0)
@@ -1594,6 +1774,7 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                         commentary_id=cid,
                         sc_id=sc_id,
                         sc_url=sc_url,
+                        sc_sutta=sc_sutta,
                         aud_file=aud_file,
                         aud_start_s=aud_start_s,
                         aud_end_s=aud_end_s,
@@ -1682,6 +1863,161 @@ def _safe_audio_filename(name: str) -> str:
         # Keep it simple: audio_map.json stores a flat filename; disallow subpaths.
         raise HTTPException(status_code=400, detail="audio filename must not contain '/'")
     return s
+
+
+def _sid_to_sc_slug(sid: str) -> str:
+    """Map local 'AN 2.1.2' style ids to SuttaCentral slugs."""
+    s = (sid or "").strip().lower().replace(" ", "")
+    if not s:
+        return ""
+    # Keep parity with chat_embed.html mapping (local subdivisions vs SC ids).
+    if s == "an2.1.2":
+        return "an2.2"
+    return s
+
+
+class _HTMLTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag in ("script", "style", "noscript"):
+            self._skip_depth += 1
+        if tag in ("p", "br", "div", "section", "article", "h1", "h2", "h3", "li"):
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str):
+        if tag in ("script", "style", "noscript") and self._skip_depth > 0:
+            self._skip_depth -= 1
+        if tag in ("p", "div", "section", "article", "li"):
+            self._parts.append("\n")
+
+    def handle_data(self, data: str):
+        if self._skip_depth > 0:
+            return
+        t = (data or "").strip()
+        if not t:
+            return
+        self._parts.append(t + " ")
+
+    def text(self) -> str:
+        s = "".join(self._parts)
+        s = re.sub(r"[ \t]+\n", "\n", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        s = re.sub(r"[ \t]{2,}", " ", s)
+        return s.strip()
+
+
+def _fetch_suttacentral_plain_text(sc_slug: str) -> str:
+    """
+    Fetch the SuttaCentral plain Sujato English view and extract readable text.
+    This is a best-effort HTML-to-text conversion (no external deps).
+    """
+    slug = (sc_slug or "").strip().lstrip("/")
+    if not slug:
+        return ""
+    # Normalize to discourse page id only (drop any /en/... that caller may include).
+    slug = slug.split("?")[0].strip().strip("/")
+    if not slug:
+        return ""
+    # Cache by slug+query.
+    q = "lang=en&layout=plain&reference=none&notes=asterisk&highlight=false&script=latin"
+    if "/en/" in slug:
+        base = f"https://suttacentral.net/{slug}"
+    else:
+        base = f"https://suttacentral.net/{slug}/en/sujato"
+    url = base + "?" + q
+    if url in _SC_TEXT_CACHE:
+        return _SC_TEXT_CACHE[url]
+    r = _HTTP.get(url, timeout=20)
+    if r.status_code != 200:
+        return ""
+    html = r.text or ""
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(html)
+        out = parser.text()
+    except Exception:
+        out = ""
+    # Heuristic: cut off everything before the first quote-like marker if present.
+    _SC_TEXT_CACHE[url] = out
+    return out
+
+
+def _raw_meta_for_book(book: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Build a mapping from normalized suttaid to raw JSON fields used by the Reference Links panel.
+    Keys are stored as both 'AN 2.1.2' and '2.1.2' (and same for AN3) for resilience.
+    """
+    b = (book or "").strip().lower()
+    if b not in ("an2", "an3"):
+        return {}
+    if b in _RAW_META_CACHE:
+        return _RAW_META_CACHE[b]
+    path = AN2_PATH if b == "an2" else AN3_PATH
+    if not path.exists():
+        _RAW_META_CACHE[b] = {}
+        return _RAW_META_CACHE[b]
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        data = _parse_json_lenient(raw)
+    except Exception:
+        try:
+            data = _extract_records_fallback(raw)
+        except Exception:
+            data = []
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(data, list):
+        for obj in data:
+            if not isinstance(obj, dict):
+                continue
+            sid_raw = str(obj.get("sutta_id") or obj.get("suttaid") or "").strip()
+            if not sid_raw:
+                continue
+            # Normalize to the same display format the UI uses.
+            sid_norm = _normalize_suttaid_an2(sid_raw)
+            out[sid_norm] = obj
+            out[sid_raw] = obj
+    _RAW_META_CACHE[b] = out
+    return out
+
+
+def _apply_raw_meta_to_item(it: ItemDetail) -> ItemDetail:
+    """Ensure sc_id/sc_url/sc_sutta/audio fields are present on ItemDetail for UI Links panel."""
+    sid = str(getattr(it, "suttaid", "") or "").strip()
+    if not sid:
+        return it
+    b = "an3" if ("AN 3." in sid or sid.replace(" ", "").upper().startswith("AN3.")) else "an2" if ("AN 2." in sid or sid.replace(" ", "").upper().startswith("AN2.")) else ""
+    if b not in ("an2", "an3"):
+        return it
+    meta = _raw_meta_for_book(b).get(sid) or _raw_meta_for_book(b).get(sid.replace("AN ", "")) or {}
+    if not isinstance(meta, dict):
+        return it
+    upd: Dict[str, Any] = {}
+    # Only fill if missing/empty to avoid overriding other sources.
+    if not (it.sc_id or "").strip():
+        upd["sc_id"] = str(meta.get("sc_id") or "").strip()
+    if not (it.sc_url or "").strip():
+        upd["sc_url"] = str(meta.get("sc_url") or "").strip()
+    if not (it.sc_sutta or "").strip():
+        upd["sc_sutta"] = str(meta.get("sc_sutta") or "").strip()
+    if not (it.aud_file or "").strip():
+        upd["aud_file"] = str(meta.get("aud_file") or "").strip()
+    if float(getattr(it, "aud_start_s", 0.0) or 0.0) == 0.0:
+        try:
+            upd["aud_start_s"] = float(meta.get("aud_start_s") or 0.0)
+        except Exception:
+            pass
+    if float(getattr(it, "aud_end_s", 0.0) or 0.0) == 0.0:
+        try:
+            upd["aud_end_s"] = float(meta.get("aud_end_s") or 0.0)
+        except Exception:
+            pass
+    if not upd:
+        return it
+    return it.model_copy(update=upd)
 
 
 @app.get("/api/audio_url")
@@ -1818,11 +2154,11 @@ def api_item(suttaid: str, book: str = Query("all")) -> ItemDetail:
     if bq in ("an1", "an2"):
         for it in _load_items(bq):
             if it.suttaid == suttaid:
-                return it
+                return _apply_raw_meta_to_item(it)
     else:
         hit = _find_item_by_suttaid(suttaid)
         if hit:
-            return hit
+            return _apply_raw_meta_to_item(hit)
     raise HTTPException(status_code=404, detail=f"Unknown suttaid: {suttaid}")
 
 
@@ -1835,11 +2171,11 @@ def api_item_by_commentary_id(commentary_id: str, book: str = Query("all")) -> I
     if bq in ("an1", "an2"):
         for it in _load_items(bq):
             if (it.commentary_id or "").strip() == want:
-                return it
+                return _apply_raw_meta_to_item(it)
     else:
         hit = _find_item_by_commentary_id(want)
         if hit:
-            return hit
+            return _apply_raw_meta_to_item(hit)
     raise HTTPException(status_code=404, detail=f"Unknown commentary_id: {want}")
 
 
@@ -2257,12 +2593,14 @@ def api_query(
             except Exception as e:
                 _dbg("H2", "an1_app.py:api_query", "Vertex retrieval failed", {"error": str(e)})
                 raise HTTPException(status_code=502, detail=f"Vertex retrieval failed: {e}") from e
+            chunks = _filter_chat_chunks(chunks)
 
             used_llm = False
             answer = ""
             if req.use_llm:
                 used_llm = True
-                llm_chunks = chunks[:10]
+                llm_chunks = _filter_chat_chunks(chunks[:10])
+                allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
                 try:
                     _dbg(
                         "H3",
@@ -2270,7 +2608,29 @@ def api_query(
                         "Calling Vertex Gemini",
                         {"chunks": len(llm_chunks), "model": vx.chat_model_name()},
                     )
-                    answer = _call_llm(req.question, llm_chunks, book=book)
+                    answer = _call_llm(
+                        req.question,
+                        llm_chunks,
+                        book=book,
+                        allowed_an=allowed_an,
+                        allowed_can=allowed_can,
+                    )
+                    bad = _illegal_citations(answer, allowed_an, allowed_can)
+                    if bad:
+                        answer2 = _call_llm(
+                            req.question,
+                            llm_chunks,
+                            book=book,
+                            allowed_an=allowed_an,
+                            allowed_can=allowed_can,
+                            extra_user_instructions=(
+                                "Your previous draft used citations that are NOT allowed: "
+                                + ", ".join(bad)
+                                + ". Regenerate the answer using ONLY the ALLOWED CITATIONS list."
+                            ),
+                        )
+                        bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
+                        answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
                 except Exception as e:
                     _dbg("H3", "an1_app.py:api_query", "Vertex LLM failed", {"error": str(e)})
                     raise HTTPException(status_code=502, detail=f"Vertex LLM call failed: {e}") from e
@@ -2302,12 +2662,14 @@ def api_query(
                 {"error": str(e)[:500]},
             )
             chunks = _lexical_retrieve_from_items(req.question, req.k, book=book)
+        chunks = _filter_chat_chunks(chunks)
 
         used_llm = False
         answer = ""
         if req.use_llm:
             used_llm = True
-            llm_chunks = chunks[:10]
+            llm_chunks = _filter_chat_chunks(chunks[:10])
+            allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
             try:
                 _dbg(
                     "H3",
@@ -2315,7 +2677,29 @@ def api_query(
                     "Calling Ollama (merged AN1+AN2)",
                     {"chunks": len(llm_chunks), "model": OLLAMA_MODEL},
                 )
-                answer = _call_llm(req.question, llm_chunks, book="all")
+                answer = _call_llm(
+                    req.question,
+                    llm_chunks,
+                    book="all",
+                    allowed_an=allowed_an,
+                    allowed_can=allowed_can,
+                )
+                bad = _illegal_citations(answer, allowed_an, allowed_can)
+                if bad:
+                    answer2 = _call_llm(
+                        req.question,
+                        llm_chunks,
+                        book="all",
+                        allowed_an=allowed_an,
+                        allowed_can=allowed_can,
+                        extra_user_instructions=(
+                            "Your previous draft used citations that are NOT allowed: "
+                            + ", ".join(bad)
+                            + ". Regenerate the answer using ONLY the ALLOWED CITATIONS list."
+                        ),
+                    )
+                    bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
+                    answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
             except Exception as e:
                 _dbg("H3", "an1_app.py:api_query", "Ollama failed", {"error": str(e)})
                 raise HTTPException(status_code=502, detail=f"Ollama LLM call failed: {e}") from e

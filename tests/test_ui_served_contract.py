@@ -29,9 +29,10 @@ def test_citation_linkifier_code_present(http: requests.Session, base_url: str) 
 
     # Ensure we served the updated citation helper that supports non-parenthesized citations.
     assert "function linkifyCitationsInElement" in html
-    assert "function citeOpenButton(refInner, kind, wrapParens)" in html
+    assert '<script src="/static/ui_linkify.js"></script>' in html
+    assert "normalizeSuttaCiteRef(" in html
 
     # Ensure the regex allows bare AN/cAN/pAN citations.
     # Match the JS regex literal as text (avoid brittle escaping rules inside the HTML).
-    assert "/\\b(cAN|pAN|AN)\\s*\\d+(?:\\.\\d+)*\\b/gi" in html, "Expected bare citation regex in served HTML"
+    assert r"/\b(cAN|pAN|AN)\s*\d+(?:\.\d+)*\b/gi" in html, "Expected bare citation regex in served HTML"
 
