@@ -1,67 +1,28 @@
-"""Landing + /app shell: when DAMA_FIREBASE_ENABLED=1, Firebase Auth + Firestore is authoritative; DIY is only used if Firebase is off."""
+"""Landing + /app shell: DIY username/password (SQLite + cookie) or open chat when DAMA_DIY_AUTH=0."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import dama_diy_auth as dama_diy
-import dama_firebase_auth as dama_fb
 
 CHAT_EMBED_NAME = "chat_embed.html"
 _HEAD_MARKER = "<!-- __FIREBASE_HEAD_INJECT__ -->"
 
 
-def _firebase_on() -> bool:
-    """Hosted Firebase Auth + Firestore (enable in Cloud Run / production)."""
-    return dama_fb.firebase_enabled()
-
-
 def _diy_on() -> bool:
-    """SQLite username/password only when Firebase is not enabled."""
-    return dama_diy.diy_auth_enabled() and not dama_fb.firebase_enabled()
+    """SQLite username/password when DAMA_DIY_AUTH is not explicitly off."""
+    return dama_diy.diy_auth_enabled()
 
 
 def _inject_chat_head(html: str) -> str:
-    if _firebase_on():
-        inj = """    <script>window.__DAMA_DIY_AUTH=false;</script>
-    <script>window.__DAMA_SEND_CREDENTIALS=false;</script>
-    <script>window.__DAMA_FIREBASE_REQUIRED=true;</script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-    <script>
-    (function(){
-      fetch('/api/public/firebase_config').then(function(r){return r.json();}).then(function(cfg){
-        if (!cfg || !cfg.apiKey) {
-          document.body.innerHTML = '<p style="color:#e9eefc;padding:2rem;font-family:system-ui,sans-serif">Firebase web config missing (set DAMA_FIREBASE_WEB_CONFIG).</p>';
-          return;
-        }
-        firebase.initializeApp(cfg);
-        firebase.auth().onAuthStateChanged(function(user){
-          if (!user) { window.location.href = '/'; return; }
-          user.getIdToken().then(function(t){
-            return fetch('/api/auth/me', { headers: { Authorization: 'Bearer ' + t } });
-          }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); }).then(function(x){
-            if (x.ok && x.d) window.__damaAccount = x.d;
-            if (window.__damaSyncGreet) window.__damaSyncGreet();
-          }).catch(function(){});
-          if (window.__damaChatBoot) window.__damaChatBoot();
-        });
-      }).catch(function(e){
-        document.body.innerHTML = '<p style="color:#ff5c7a;padding:2rem;font-family:system-ui,sans-serif">' + String(e && e.message ? e.message : e) + '</p>';
-      });
-    })();
-    </script>
-"""
-        return html.replace(_HEAD_MARKER, inj, 1)
     if _diy_on():
-        inj = """    <script>window.__DAMA_FIREBASE_REQUIRED=false;</script>
-    <script>window.__DAMA_DIY_AUTH=true;</script>
+        inj = """    <script>window.__DAMA_DIY_AUTH=true;</script>
     <script>window.__DAMA_SEND_CREDENTIALS=true;</script>
     <script>
     (function(){
@@ -77,8 +38,7 @@ def _inject_chat_head(html: str) -> str:
     </script>
 """
         return html.replace(_HEAD_MARKER, inj, 1)
-    inj = """    <script>window.__DAMA_FIREBASE_REQUIRED=false;</script>
-    <script>window.__DAMA_DIY_AUTH=false;</script>
+    inj = """    <script>window.__DAMA_DIY_AUTH=false;</script>
     <script>window.__DAMA_SEND_CREDENTIALS=false;</script>
 """
     return html.replace(_HEAD_MARKER, inj, 1)
@@ -154,7 +114,7 @@ LANDING_DIY_HTML = """<!DOCTYPE html>
       <button type="button" class="ghost" id="btnUp">Create account</button>
     </div>
     <div class="err" id="msg"></div>
-    <p class="foot">Username: 3–32 characters (letters, digits, <code>_</code> <code>.</code> <code>-</code>). Password: at least 6 characters. For email / Google / reset-password flows, use Firebase (see server docs).</p>
+    <p class="foot">Username: 3–32 characters (letters, digits, <code>_</code> <code>.</code> <code>-</code>). Password: at least 6 characters.</p>
   </div>
   <script>
   (function(){
@@ -212,114 +172,6 @@ LANDING_DIY_HTML = """<!DOCTYPE html>
 </html>
 """
 
-LANDING_FIREBASE_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DAMA — Sign in</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-  <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0b0f19; color: #e9eefc; min-height: 100vh; }
-    .wrap { max-width: 420px; margin: 0 auto; padding: 3rem 1.25rem; }
-    h1 { font-weight: 600; font-size: 1.5rem; margin: 0 0 0.5rem; }
-    p.sub { color: #a7b3d6; font-size: 0.9rem; margin: 0 0 1.5rem; }
-    label { display: block; font-size: 0.75rem; color: #a7b3d6; margin-bottom: 0.35rem; }
-    input { width: 100%; padding: 0.65rem 0.75rem; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); background: #0f1626; color: #e9eefc; font-size: 0.95rem; }
-    input:focus { outline: none; border-color: #7c5cff; }
-    .field { margin-bottom: 1rem; }
-    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-    .row2 { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
-    button { cursor: pointer; border: none; border-radius: 8px; padding: 0.65rem 1rem; font-weight: 500; font-size: 0.9rem; }
-    .primary { background: #ffcc33; color: #0b0f19; }
-    .ghost { background: rgba(255,255,255,.08); color: #e9eefc; }
-    .linkish { background: rgba(255,255,255,.06); color: #cfe0ff; }
-    .err { color: #ff5c7a; font-size: 0.85rem; margin-top: 1rem; min-height: 1.2rem; }
-    .foot { margin-top: 2rem; font-size: 0.8rem; color: #6b7aad; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h1>Dama</h1>
-    <p class="sub">AN1, AN2 &amp; AN3 — sign in or create an account</p>
-    <div class="field"><label for="em">Email</label><input id="em" type="email" autocomplete="username" /></div>
-    <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" /></div>
-    <div class="row">
-      <button type="button" class="primary" id="btnIn">Log in</button>
-      <button type="button" class="ghost" id="btnUp">Create account</button>
-    </div>
-    <div class="row2">
-      <button type="button" class="linkish" id="btnReset">Reset password</button>
-      <button type="button" class="linkish" id="btnVerify">Resend verification</button>
-      <button type="button" class="ghost" id="btnGoogle">Continue with Google</button>
-    </div>
-    <div class="err" id="msg"></div>
-    <p class="foot">Firebase Authentication (email/password + Google). For LAN testing, add your host to Authentication → Settings → Authorised domains.</p>
-  </div>
-  <script>
-  (function(){
-    var msg = document.getElementById('msg');
-    function show(s){ msg.textContent = s || ''; }
-    fetch('/api/public/firebase_config').then(function(r){return r.json();}).then(function(cfg){
-      if (!cfg || !cfg.apiKey) { show('Firebase not configured on server.'); return; }
-      firebase.initializeApp(cfg);
-      firebase.auth().onAuthStateChanged(function(user){
-        if (!user) return;
-        // For local/dev, don't block the app behind email verification.
-        // Firebase's email verification can be flaky/confusing during localhost iteration.
-        window.location.href = '/app';
-      });
-      document.getElementById('btnIn').onclick = function(){
-        show('');
-        var e = document.getElementById('em').value.trim();
-        var p = document.getElementById('pw').value;
-        firebase.auth().signInWithEmailAndPassword(e, p).catch(function(err){ show(err.message || String(err)); });
-      };
-      document.getElementById('btnUp').onclick = function(){
-        show('');
-        var e = document.getElementById('em').value.trim();
-        var p = document.getElementById('pw').value;
-        firebase.auth().createUserWithEmailAndPassword(e, p).then(function(cred){
-          try { if (cred && cred.user) cred.user.sendEmailVerification(); } catch (e2) {}
-          show('Account created. Verification email sent (optional). Redirecting…');
-          // Stay signed-in so the user can proceed immediately.
-        }).catch(function(err){ show(err.message || String(err)); });
-      };
-      document.getElementById('btnReset').onclick = function(){
-        show('');
-        var e = document.getElementById('em').value.trim();
-        if (!e) { show('Enter your email above first.'); return; }
-        firebase.auth().sendPasswordResetEmail(e).then(function(){
-          show('Password reset email sent.');
-        }).catch(function(err){ show(err.message || String(err)); });
-      };
-      document.getElementById('btnVerify').onclick = function(){
-        show('');
-        var u = firebase.auth().currentUser;
-        if (!u) { show('Log in first, then resend verification.'); return; }
-        u.sendEmailVerification().then(function(){ show('Verification email sent.'); })
-          .catch(function(err){ show(err.message || String(err)); });
-      };
-      document.getElementById('btnGoogle').onclick = function(){
-        show('');
-        try {
-          var provider = new firebase.auth.GoogleAuthProvider();
-          firebase.auth().signInWithPopup(provider).catch(function(err){ show(err.message || String(err)); });
-        } catch (e4) {
-          show(String(e4));
-        }
-      };
-    }).catch(function(e){ show(String(e)); });
-  })();
-  </script>
-</body>
-</html>
-"""
-
 
 class AuthUserPass(BaseModel):
     username: str = Field(min_length=1, max_length=32)
@@ -332,11 +184,6 @@ class ProfilePatch(BaseModel):
 
 def _diy_required() -> None:
     if not _diy_on():
-        if dama_fb.firebase_enabled():
-            raise HTTPException(
-                status_code=503,
-                detail="This server uses Firebase Auth only (DIY username/password is disabled).",
-            )
         raise HTTPException(status_code=503, detail="DIY auth is disabled (set DAMA_DIY_AUTH or unset it for default-on)")
 
 
@@ -441,7 +288,7 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
 
     @app.patch("/api/auth/profile")
     def auth_profile_patch(request: Request, body: ProfilePatch) -> JSONResponse:
-        """Update display name (DIY session only; Firebase users set name in Firebase / client)."""
+        """Update display name for the logged-in DIY user."""
         _diy_required()
         uid = request.session.get("uid")
         if uid is None:
@@ -453,79 +300,43 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
         return JSONResponse({"ok": True})
 
     @app.get("/api/auth/me")
-    def auth_me(request: Request, authorization: Optional[str] = Header(default=None)) -> JSONResponse:
-        """Bearer (Firebase) when enabled; else session (DIY)."""
-        if _firebase_on():
-            if not authorization or not authorization.strip().lower().startswith("bearer "):
-                raise HTTPException(status_code=401, detail="Authorization Bearer token required")
-            tok = authorization.split(" ", 1)[1].strip()
-            try:
-                claims = dama_fb.decode_id_token(tok)
-            except Exception as e:
-                raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}") from e
-            uid = str(claims.get("uid") or "").strip()
-            email = str(claims.get("email") or "").strip()
-            name = str(claims.get("name") or "").strip()
-            return JSONResponse(
-                {
-                    "id": uid,
-                    "username": email or name or uid,
-                    "display_name": name or None,
-                    "email": email or None,
-                    "auth": "firebase",
-                }
-            )
-        if _diy_on():
-            uid = request.session.get("uid")
-            if uid is None:
-                raise HTTPException(status_code=401, detail="Not logged in")
-            row = dama_diy.get_user_by_id(base_dir, int(uid))
-            if row is None:
-                request.session.clear()
-                raise HTTPException(status_code=401, detail="Invalid session")
-            return JSONResponse(
-                {
-                    "id": row[0],
-                    "username": row[1],
-                    "display_name": row[2],
-                    "auth": "diy",
-                }
-            )
-        raise HTTPException(status_code=503, detail="Authentication not configured")
-
-    if _firebase_on():
-
-        @app.get("/api/public/firebase_config")
-        def api_public_firebase_config() -> JSONResponse:
-            cfg = dama_fb.web_config_dict()
-            allow = ("apiKey", "authDomain", "projectId", "storageBucket", "messagingSenderId", "appId")
-            return JSONResponse({k: cfg[k] for k in allow if k in cfg})
+    def auth_me(request: Request) -> JSONResponse:
+        """Session cookie (DIY)."""
+        if not _diy_on():
+            raise HTTPException(status_code=503, detail="Authentication not configured")
+        uid = request.session.get("uid")
+        if uid is None:
+            raise HTTPException(status_code=401, detail="Not logged in")
+        row = dama_diy.get_user_by_id(base_dir, int(uid))
+        if row is None:
+            request.session.clear()
+            raise HTTPException(status_code=401, detail="Invalid session")
+        return JSONResponse(
+            {
+                "id": row[0],
+                "username": row[1],
+                "display_name": row[2],
+                "auth": "diy",
+            }
+        )
 
     @app.get("/app")
     def app_chat(request: Request):
-        if not _diy_on() and not _firebase_on():
+        if not _diy_on():
             return RedirectResponse(url="/", status_code=302)
-        # For DIY auth, verify session exists before serving the app
-        if _diy_on():
-            uid = request.session.get("uid")
-            if uid is None:
-                return RedirectResponse(url="/", status_code=302)
+        uid = request.session.get("uid")
+        if uid is None:
+            return RedirectResponse(url="/", status_code=302)
         return chat_response()
 
     @app.get("/")
     def home(request: Request):
-        # If DIY auth is on and user is already logged in, redirect to /app
         if _diy_on():
             uid = request.session.get("uid")
             if uid is not None:
                 return RedirectResponse(url="/app", status_code=302)
             return HTMLResponse(
                 content=LANDING_DIY_HTML,
-                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
-            )
-        if _firebase_on():
-            return HTMLResponse(
-                content=LANDING_FIREBASE_HTML,
                 headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
         return chat_response()
@@ -533,22 +344,14 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
     @app.get("/landing")
     def signed_out_landing(request: Request):
         """Dedicated landing used after sign-out (stable even in open-chat mode)."""
-        # If auth is enabled, reuse the normal landing.
         if _diy_on():
             uid = request.session.get("uid")
             if uid is not None:
-                # If they're logged in, bounce to the app.
                 return RedirectResponse(url="/app", status_code=302)
             return HTMLResponse(
                 content=LANDING_DIY_HTML,
                 headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
-        if _firebase_on():
-            return HTMLResponse(
-                content=LANDING_FIREBASE_HTML,
-                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
-            )
-        # Open chat mode: show a simple "signed out" landing.
         return HTMLResponse(
             content=LANDING_SIGNED_OUT_HTML,
             headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},

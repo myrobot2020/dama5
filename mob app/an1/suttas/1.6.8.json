@@ -1,0 +1,14 @@
+{
+  "sutta_id": "1.6.8",
+  "sutta_name_en": "dhamma",
+  "sutta_name_pali": "",
+  "chain": {
+    "items": [
+      "dhamma"
+    ],
+    "count": 1,
+    "is_ordered": true,
+    "category": "single factor"
+  },
+  "valid": false
+}

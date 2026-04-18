@@ -1,0 +1,39 @@
+{
+  "sutta_id": "2.10.1",
+  "sutta_name_en": "",
+  "sutta_name_pali": "",
+  "sc_id": "an2.91",
+  "sc_url": "https://suttacentral.net/an2.91/en/sujato?lang=en&layout=plain&reference=none&notes=asterisk&highlight=false&script=latin",
+  "aud_file": "008_Anguttara Nikaya Book 2C 246 - 2121 by Bhante Hye Dhammavuddho Mahathera.mp3",
+  "aud_start_s": 955.98,
+  "aud_end_s": 1134.7,
+  "chain": {
+    "items": [
+      "takes up a burden not his own",
+      "shirks a burden that is his"
+    ],
+    "count": 2,
+    "is_ordered": false,
+    "category": "fools"
+  },
+  "alignment": {
+    "rubric_version": "align_v4",
+    "scores_0_to_5": {
+      "source_ids_url": 5,
+      "text_to_source": 2,
+      "audio_segment": 5,
+      "commentary": 0,
+      "chain": 1,
+      "boundaries": 3
+    },
+    "total": 16,
+    "max_total": 30,
+    "needs_review": true,
+    "notes": "Auto-scored v4: sim_text_to_source=0.233, sim_commentary_chain=0.000, sim_commentary_kw=0.000, chain_supported=0/2"
+  },
+  "commentary_id": "cAN 2.10.1",
+  "sc_sutta": "91 “There are, mendicants, these two things. What two? Views favoring existence and views favoring nonexistence. These are the two things.”",
+  "sutta": "2.10.1 the buddha said monks there are these two fools what two he who showed us a burden that does not befall him and he who shirks a burden that befalls him these are the two and then",
+  "commentary": "",
+  "valid": false
+}

@@ -606,7 +606,7 @@
     <div id="profileBackdrop" class="profileBackdrop" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
       <div class="profileBox">
         <h3 id="profileTitle">Profile</h3>
-        <p id="profileHint" class="muted small" style="margin:0 0 12px;">Display name is saved on the server when you use account login (DIY or Firebase).</p>
+        <p id="profileHint" class="muted small" style="margin:0 0 12px;">Display name is saved on this server for your account.</p>
         <label class="muted small" for="profileNameInput">Display name</label>
         <input type="text" id="profileNameInput" maxlength="128" placeholder="How we greet you" autocomplete="nickname" />
         <div class="sectionTitle" style="margin-top:12px;">Recent activity</div>
@@ -628,6 +628,26 @@
             headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '721082' },
             body: JSON.stringify({
               sessionId: '721082',
+              runId: 'pre-fix',
+              hypothesisId: hypothesisId,
+              location: location,
+              message: message,
+              data: data || {},
+              timestamp: Date.now(),
+            }),
+          }).catch(() => {});
+        } catch (e) {}
+      }
+      // #endregion agent log
+
+      // #region agent log
+      function __dbg8249(hypothesisId, location, message, data) {
+        try {
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '8249d8' },
+            body: JSON.stringify({
+              sessionId: '8249d8',
               runId: 'pre-fix',
               hypothesisId: hypothesisId,
               location: location,
@@ -816,7 +836,7 @@
       let suttaRaw = '';
       let lastSuttaParagraphMeta = null;
       let _lastQueryChunks = [];
-      let _pendingRefJump = null; // { kind: 'sutta'|'commentary', ref: 'AN ...'|'cAN ...' }
+      let _pendingRefJump = null; // { kind, ref, citeHint?: string (URI-encoded needle) }
       // #region agent log
       __agentDbg('H1', 'an1_app.py:inline_js:init', 'Reference panel element probe', {
         hasRefModeRow: !!refModeRow,
@@ -1019,36 +1039,90 @@
         return null;
       }
 
-      function _tryJumpAndHighlight(kind, ref) {
+      function _decodeCiteHintAttr(enc) {
+        if (enc == null || enc === '') return '';
+        try {
+          return decodeURIComponent(String(enc));
+        } catch (e) {
+          return String(enc || '');
+        }
+      }
+
+      function _tryJumpAndHighlight(kind, ref, citeHintEnc) {
         try {
           const k = (kind || '').toString().toLowerCase();
           const r = normalizeSuttaCiteRef(ref);
+          const citeHint = _decodeCiteHintAttr(citeHintEnc).trim();
+          // #region agent log
+          const _suttaIdsInLast = (_lastQueryChunks || []).filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'sutta').map((c) => normalizeSuttaCiteRef(String(c.suttaid || '')));
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:entry',message:'jump/highlight attempt',data:{kind:k,ref:r,lastChunksLen:(_lastQueryChunks||[]).length,suttaIdsSample:_suttaIdsInLast.slice(0,6),hasPerLinkHint:!!citeHint,runId:'post-fix'},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+          // #endregion agent log
           if (!r) return false;
 
           if (k === 'commentary') {
             const commRaw = (commTextEl && commTextEl.getAttribute('data-raw')) ? (commTextEl.getAttribute('data-raw') || '') : (commTextEl ? commTextEl.textContent : '');
+            if (citeHint) {
+              const rngH = _findLooseRange(commRaw || '', citeHint);
+              if (rngH) {
+                highlightRawRangeInCommentary(commTextEl, commRaw || '', rngH.start, rngH.end, { flash: true });
+                // #region agent log
+                fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:hint_ok',message:'commentary highlight via per-link hint',data:{runId:'post-fix'},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+                // #endregion agent log
+                return true;
+              }
+            }
             const wanted = _lastQueryChunks
               .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'commentary')
               .filter((c) => normalizeSuttaCiteRef(String(c.commentary_id || '')) === r || normalizeSuttaCiteRef('c' + String(c.suttaid || '')) === r)
               .sort((a, b) => String(b.text || '').length - String(a.text || '').length)[0];
+            const commMatchN = _lastQueryChunks.filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'commentary').filter((c) => normalizeSuttaCiteRef(String(c.commentary_id || '')) === r || normalizeSuttaCiteRef('c' + String(c.suttaid || '')) === r).length;
+            // #region agent log
+            fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:comm',message:'commentary chunk resolution',data:{commMatchN,haveWanted:!!wanted},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+            // #endregion agent log
             if (!wanted) return false;
             const body = _extractDocBodyFromChunkText('commentary', wanted.text || '');
             const rng = _findLooseRange(commRaw || '', body.slice(0, 320));
+            // #region agent log
+            if (!rng) fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:comm_rng',message:'no loose range commentary',data:{bodyPrefixLen:body.slice(0,320).length,commRawLen:(commRaw||'').length},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+            // #endregion agent log
             if (!rng) return false;
             highlightRawRangeInCommentary(commTextEl, commRaw || '', rng.start, rng.end, { flash: true });
+            // #region agent log
+            fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:ok',message:'commentary highlight ok',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+            // #endregion agent log
             return true;
           }
 
           // sutta
+          if (citeHint) {
+            const rngH = _findLooseRange(suttaRaw || '', citeHint);
+            if (rngH) {
+              highlightRawRangeInSutta(suttaTextEl, suttaRaw || '', rngH.start, rngH.end, { flash: true });
+              // #region agent log
+              fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:hint_ok',message:'sutta highlight via per-link hint',data:{runId:'post-fix'},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+              // #endregion agent log
+              return true;
+            }
+          }
           const wanted = _lastQueryChunks
             .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'sutta')
             .filter((c) => normalizeSuttaCiteRef(String(c.suttaid || '')) === r)
             .sort((a, b) => String(b.text || '').length - String(a.text || '').length)[0];
+          const suttaMatchN = _lastQueryChunks.filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'sutta').filter((c) => normalizeSuttaCiteRef(String(c.suttaid || '')) === r).length;
+          // #region agent log
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:sutta',message:'sutta chunk resolution',data:{suttaMatchN,haveWanted:!!wanted},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+          // #endregion agent log
           if (!wanted) return false;
           const body = _extractDocBodyFromChunkText('sutta', wanted.text || '');
           const rng = _findLooseRange(suttaRaw || '', body.slice(0, 320));
+          // #region agent log
+          if (!rng) fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:sutta_rng',message:'no loose range sutta',data:{bodyPrefixLen:body.slice(0,320).length,suttaRawLen:(suttaRaw||'').length},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+          // #endregion agent log
           if (!rng) return false;
           highlightRawRangeInSutta(suttaTextEl, suttaRaw || '', rng.start, rng.end, { flash: true });
+          // #region agent log
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:_tryJumpAndHighlight:ok',message:'sutta highlight ok',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+          // #endregion agent log
           return true;
         } catch (e) {
           return false;
@@ -1136,13 +1210,19 @@
       }
       function isLikelyOllamaDown(err) {
         const s = String((err && err.message) ? err.message : err || '').toLowerCase();
-        return (
-          s.includes('ollama') ||
+        const out = (
           s.includes('11434') ||
           s.includes('connection refused') ||
           s.includes('failed to establish a new connection') ||
           s.includes('max retries exceeded')
         );
+        // #region agent log
+        __dbg8249('H1', 'chat_embed.html:isLikelyOllamaDown', 'classify ollama down', {
+          s: s.slice(0, 500),
+          out,
+        });
+        // #endregion agent log
+        return out;
       }
       function showOllamaModal(message) {
         if (!ollamaBackdrop) return;
@@ -1150,6 +1230,11 @@
           const m = (message && String(message).trim()) ? String(message).trim() : '';
           ollamaMsg.textContent = m || "This app is set to use Ollama for LLM answers, but it can't reach http://localhost:11434.";
         }
+        // #region agent log
+        __dbg8249('H2', 'chat_embed.html:showOllamaModal', 'show ollama modal', {
+          msg: String(message || '').slice(0, 800),
+        });
+        // #endregion agent log
         ollamaBackdrop.classList.add('open');
       }
       function closeOllamaModal() {
@@ -1298,6 +1383,45 @@
 
       // Moved citation/markdown helpers to /static/ui_linkify.js (globals: esc, escAttr, normalizeSuttaCiteRef, citeOpenButton, renderMarkdown, ...).
 
+      function _pickChunkForCite(chunks, kind, normRef) {
+        const k = (kind || '').toString().toLowerCase();
+        const r = normalizeSuttaCiteRef(normRef);
+        if (!r || !Array.isArray(chunks) || !chunks.length) return null;
+        if (k === 'commentary') {
+          const rows = chunks
+            .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'commentary')
+            .filter((c) => normalizeSuttaCiteRef(String(c.commentary_id || '')) === r || normalizeSuttaCiteRef('c' + String(c.suttaid || '')) === r)
+            .sort((a, b) => String(b.text || '').length - String(a.text || '').length);
+          return rows[0] || null;
+        }
+        const rows = chunks
+          .filter((c) => ((c && c.kind) ? String(c.kind).toLowerCase() : '') === 'sutta')
+          .filter((c) => normalizeSuttaCiteRef(String(c.suttaid || '')) === r)
+          .sort((a, b) => String(b.text || '').length - String(a.text || '').length);
+        return rows[0] || null;
+      }
+
+      function enrichCiteHintsFromChunks(rootEl, chunks) {
+        try {
+          if (!rootEl || !Array.isArray(chunks) || !chunks.length) return;
+          rootEl.querySelectorAll('a.cite-open').forEach((a) => {
+            if (a.getAttribute('data-cite-hint')) return;
+            const kind = (a.getAttribute('data-kind') || 'sutta').toString();
+            const ref = normalizeSuttaCiteRef(a.getAttribute('data-ref') || '');
+            if (!ref) return;
+            const wanted = _pickChunkForCite(chunks, kind, ref);
+            if (!wanted) return;
+            const k = kind === 'commentary' ? 'commentary' : 'sutta';
+            const body = _extractDocBodyFromChunkText(k, wanted.text || '');
+            const needle = body.slice(0, 320).trim();
+            if (!needle) return;
+            try {
+              a.setAttribute('data-cite-hint', encodeURIComponent(needle));
+            } catch (e2) {}
+          });
+        } catch (e) {}
+      }
+
       function linkifyCitationsInElement(rootEl) {
         if (!rootEl) return;
         const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
@@ -1414,6 +1538,23 @@
         if (lastNode) lastNode.remove();
       }
 
+      function formatServerTimingsFooter(tm) {
+        if (!tm || typeof tm !== 'object') return '';
+        const skip = new Set(['query_used', 'queries_tried', 'chunks', 'used_llm']);
+        const parts = [];
+        const keys = Object.keys(tm).sort();
+        for (let i = 0; i < keys.length; i++) {
+          const k = keys[i];
+          if (skip.has(k)) continue;
+          const v = tm[k];
+          if (typeof v === 'number' && Number.isFinite(v)) {
+            const label = k.replace(/_ms$/i, '').replace(/_/g, ' ');
+            parts.push(label + ' ' + Math.round(v) + 'ms');
+          }
+        }
+        return parts.length ? parts.join(' · ') : '';
+      }
+
       function appendMsg(role, text, meta) {
         if (!chatLogEl) return;
         const id = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -1427,6 +1568,7 @@
         } else {
           b.innerHTML = renderMarkdown(text || '');
           linkifyCitationsInElement(b);
+          enrichCiteHintsFromChunks(b, (meta && meta.chunks) ? meta.chunks : null);
           attachCodeCopyButtons(b);
         }
         wrap.appendChild(b);
@@ -1437,9 +1579,19 @@
           if (lat != null && !Number.isNaN(lat)) {
             const latEl = document.createElement('span');
             latEl.className = 'muted small';
-            latEl.textContent = lat + ' ms';
+            latEl.textContent = lat + ' ms (client)';
             latEl.style.marginRight = '6px';
             footer.appendChild(latEl);
+          }
+          const srv = formatServerTimingsFooter(meta && meta.timings_ms);
+          if (srv) {
+            const timEl = document.createElement('span');
+            timEl.className = 'muted small';
+            timEl.style.marginRight = '6px';
+            timEl.style.whiteSpace = 'normal';
+            timEl.title = srv;
+            timEl.textContent = srv;
+            footer.appendChild(timEl);
           }
           const copyWhole = document.createElement('button');
           copyWhole.type = 'button';
@@ -1539,12 +1691,6 @@
         if (window.__DAMA_SEND_CREDENTIALS) {
           o.credentials = 'include';
         }
-        if (window.__DAMA_FIREBASE_REQUIRED && window.firebase && firebase.auth().currentUser) {
-          try {
-            const t = await firebase.auth().currentUser.getIdToken();
-            o.headers = Object.assign({}, o.headers || {}, { Authorization: 'Bearer ' + t });
-          } catch (e) {}
-        }
         const res = await fetch(url, o);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -1556,7 +1702,7 @@
       }
 
       async function postPedagogy(kind, payload) {
-        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) return;
+        if (!window.__DAMA_SEND_CREDENTIALS) return;
         try {
           await fetchJson('/api/pedagogy/event', {
             method: 'POST',
@@ -1569,7 +1715,7 @@
       }
 
       async function syncAccountMe() {
-        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) return;
+        if (!window.__DAMA_SEND_CREDENTIALS) return;
         try {
           const me = await fetchJson('/api/auth/me');
           window.__damaAccount = me;
@@ -1741,20 +1887,21 @@
           _pendingRefJump = null;
           // Ensure we're on the relevant panel.
           setRefMode(pj.kind === 'commentary' ? 'sutta' : getRefMode());
-          void Promise.resolve().then(() => { _tryJumpAndHighlight(pj.kind, pj.ref); });
+          void Promise.resolve().then(() => { _tryJumpAndHighlight(pj.kind, pj.ref, pj.citeHint); });
         }
       }
 
-      async function openReadingFromCitation(kind, ref) {
+      async function openReadingFromCitation(kind, ref, citeHintEnc) {
         const r = (ref || '').trim();
         if (!r) return;
+        const citeHint = (citeHintEnc != null && citeHintEnc !== '') ? String(citeHintEnc) : '';
         void postPedagogy('citation_open', { kind: kind, ref: r });
         // #region agent log
         __agentDbg('H3', 'an1_app.py:inline_js:openReadingFromCitation', 'Open reference from citation', { kind: kind, ref: r });
         // #endregion agent log
         suttaRaw = '';
         lastSuttaParagraphMeta = null;
-        _pendingRefJump = { kind: (kind === 'commentary' ? 'commentary' : 'sutta'), ref: r };
+        _pendingRefJump = { kind: (kind === 'commentary' ? 'commentary' : 'sutta'), ref: r, citeHint: citeHint };
         suttaTextEl.classList.remove('prose');
         suttaTextEl.textContent = '';
         commTextEl.textContent = '';
@@ -1855,6 +2002,7 @@
         }
         lastUserQuestion = question;
         const t0 = performance.now();
+        let tm = null;
         try {
           const useLlm = getUseLlm();
           // #region agent log
@@ -1869,7 +2017,7 @@
             signal: askAbort.signal,
           });
           const latencyMs = Math.round(performance.now() - t0);
-          setChatStatus('Done · ' + latencyMs + ' ms');
+          tm = (data && data.timings_ms && typeof data.timings_ms === 'object') ? data.timings_ms : null;
           const chunks = data.chunks || [];
           _lastQueryChunks = Array.isArray(chunks) ? chunks : [];
           const sidKinds = [];
@@ -1923,7 +2071,27 @@
             answerLen: answerText.length,
           });
           // #endregion agent log
-          appendMsg('asst', answerText, { question, sources: sidKinds, latency_ms: latencyMs });
+          const tRender0 = performance.now();
+          appendMsg('asst', answerText, { question, sources: sidKinds, latency_ms: latencyMs, timings_ms: tm, chunks: chunks });
+          const renderMs = Math.max(0, Math.round(performance.now() - tRender0));
+
+          if (tm) {
+            const parts = [];
+            const totalMs = latencyMs + renderMs;
+            parts.push('Total ' + totalMs + 'ms');
+            if (tm.retrieve_ms != null) parts.push('Retrieval ' + Math.round(Number(tm.retrieve_ms)) + 'ms');
+            if (tm.prompt_build_ms != null) parts.push('Prompt build ' + Math.round(Number(tm.prompt_build_ms)) + 'ms');
+            const ft = (tm.llm_first_token_ms != null) ? Math.round(Number(tm.llm_first_token_ms)) : null;
+            const dn = (tm.llm_done_ms != null) ? Math.round(Number(tm.llm_done_ms)) : null;
+            if (ft != null || dn != null) {
+              parts.push('LLM first-token ' + (ft != null ? ft : '?') + 'ms + done ' + (dn != null ? dn : '?') + 'ms');
+            }
+            if (tm.post_citations_ms != null) parts.push('Post/citations ' + Math.round(Number(tm.post_citations_ms)) + 'ms');
+            parts.push('Render ' + renderMs + 'ms');
+            setChatStatus(parts.join(', '));
+          } else {
+            setChatStatus('Done · ' + (latencyMs + renderMs) + ' ms');
+          }
           playPing();
           const worthSaving = answerText.trim().length > 0 && answerText.trim() !== '(no answer)';
           if (worthSaving) {
@@ -1960,6 +2128,12 @@
           // #region agent log
           __agentDbg('H7', 'an1_app.py:inline_js:askWithQuestion', 'Request failed', {
             error: (e && e.message) ? String(e.message) : String(e),
+          });
+          // #endregion agent log
+          // #region agent log
+          __dbg8249('H3', 'chat_embed.html:askWithQuestion:catch', 'ask failed', {
+            name: e && e.name ? String(e.name) : '',
+            msg: (e && e.message) ? String(e.message).slice(0, 800) : String(e).slice(0, 800),
           });
           // #endregion agent log
           const latencyMs = Math.round(performance.now() - t0);
@@ -2029,8 +2203,16 @@
         const kind = (btn.getAttribute('data-kind') || 'sutta').toString();
         const ref = (btn.getAttribute('data-ref') || '').toString();
         if (!ref) return;
+        const citeHintAttr = btn.getAttribute('data-cite-hint') || '';
+        // #region agent log
+        try {
+          const msgEl = btn.closest('.msg.asst');
+          const idx = msgEl ? Array.prototype.indexOf.call(chatLogEl.querySelectorAll('.msg.asst'), msgEl) : -1;
+          fetch('http://127.0.0.1:7685/ingest/6975c974-9b9d-4128-9761-b8675de3184c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'461160'},body:JSON.stringify({sessionId:'461160',location:'chat_embed.html:cite_click',message:'citation link clicked',data:{kind,ref,asstMsgIndex:idx,lastQueryChunksLen:(_lastQueryChunks||[]).length,hasPerLinkHint:!!citeHintAttr,runId:'post-fix'},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+        } catch (e2) {}
+        // #endregion agent log
         ev.preventDefault();
-        void openReadingFromCitation(kind, ref);
+        void openReadingFromCitation(kind, ref, citeHintAttr);
       });
 
       async function playMappedCommentaryAudio() {
@@ -2211,7 +2393,7 @@
       async function loadProfileActivity() {
         const el = document.getElementById('profileActivity');
         if (!el) return;
-        if (!window.__DAMA_SEND_CREDENTIALS && !window.__DAMA_FIREBASE_REQUIRED) {
+        if (!window.__DAMA_SEND_CREDENTIALS) {
           el.textContent = 'Sign in to see pedagogy activity.';
           return;
         }
@@ -2258,9 +2440,7 @@
 
       function initProfileChrome() {
         if (profileHintEl) {
-          if (window.__DAMA_FIREBASE_REQUIRED) {
-            profileHintEl.textContent = 'Display name is stored in your Firebase account (Email/Google).';
-          } else if (window.__DAMA_DIY_AUTH) {
+          if (window.__DAMA_DIY_AUTH) {
             profileHintEl.textContent = 'Display name is saved on this server for your local account.';
           } else {
             profileHintEl.textContent = 'Display name is stored only in this browser (no account login).';
@@ -2289,13 +2469,6 @@
               } catch (e) {
                 setChatStatus('Could not save profile: ' + (e && e.message ? e.message : e));
               }
-            } else if (window.__DAMA_FIREBASE_REQUIRED && window.firebase && firebase.auth().currentUser) {
-              try {
-                await firebase.auth().currentUser.updateProfile({ displayName: v || '' });
-                await syncAccountMe();
-              } catch (e) {
-                setChatStatus('Could not update Firebase profile: ' + (e && e.message ? e.message : e));
-              }
             } else {
               window.__damaAccount = Object.assign({}, window.__damaAccount || {}, { display_name: v || null });
             }
@@ -2317,15 +2490,6 @@
               .catch(function() { window.location.href = '/landing'; });
             return;
           }
-          if (window.__DAMA_FIREBASE_REQUIRED && window.firebase) {
-            firebase.auth().signOut().then(function() {
-              window.location.href = '/landing';
-            }).catch(function() {
-              window.location.href = '/landing';
-            });
-            return;
-          }
-          // Open chat mode: just reload to show landing/app page
           window.location.href = '/landing';
         });
         document.addEventListener('keydown', (ev) => {
@@ -2444,9 +2608,7 @@
       initProfileChrome();
       initLayoutChrome();
       window.__damaChatBoot = function() { void boot(); };
-      if (!window.__DAMA_FIREBASE_REQUIRED) {
-        window.__damaChatBoot();
-      }
+      window.__damaChatBoot();
     </script>
   </body>
 </html>

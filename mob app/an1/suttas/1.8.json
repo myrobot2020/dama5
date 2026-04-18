@@ -1,0 +1,16 @@
+{
+  "sutta_id": "1.8",
+  "sutta_name_en": "wisdom",
+  "sutta_name_pali": "",
+  "sutta": "0.6 Of slight account monks is the loss of such things as relatives miserable indeed among losses is the loss of wisdom and then.",
+  "commentary": "",
+  "chain": {
+    "items": [
+      "wisdom"
+    ],
+    "count": 1,
+    "is_ordered": true,
+    "category": "single factor"
+  },
+  "valid": false
+}

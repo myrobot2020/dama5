@@ -29,3 +29,7 @@ rag_index_*/
 # Local secrets / scratch (do not commit)
 dama5_secrets.md
 dama_users.sqlite
+scripts/serviceAccount.json
+
+# Node / front-end deps (never commit)
+**/node_modules/

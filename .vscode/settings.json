@@ -1,0 +1,9 @@
+{
+  "[json]": {
+    "editor.wordWrap": "on"
+  },
+  "[jsonc]": {
+    "editor.wordWrap": "on"
+  }
+}
+

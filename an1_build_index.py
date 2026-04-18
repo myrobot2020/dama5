@@ -44,6 +44,10 @@ COLLECTION_AN2 = "an2_sutta"
 PERSIST_AN3_DIR = _optional_env_path("CHROMA_AN3_DIR") or _default_chroma_dir("rag_index_an3")
 COLLECTION_AN3 = "an3_sutta"
 
+# Single Chroma store: every sutta that passes the merged API corpus gate (an1+an2+an3 JSON ∪ per-folder, deduped).
+PERSIST_VALID_SUTTAS_DIR = _optional_env_path("CHROMA_VALID_SUTTAS_DIR") or _default_chroma_dir("rag_index_valid_suttas")
+COLLECTION_VALID_SUTTAS = "valid_suttas"
+
 DEBUG_LOG_PATH = _optional_env_path("DAMA_DEBUG_LOG_PATH") or (BASE_DIR / "debug-655121.log")
 
 
@@ -422,14 +426,16 @@ def _record_to_docs_an2(record: Dict[str, Any]) -> List[Tuple[str, str, str, str
     return out
 
 
-def _chromadb_build(
+def _chromadb_build_from_records(
     *,
-    json_path: Path,
+    records: List[Dict[str, Any]],
     persist_dir: Path,
     collection_name: str,
     record_to_docs: Callable[[Dict[str, Any]], List[Tuple[str, str, str, str]]],
     id_prefix: str,
     tqdm_desc: str,
+    get_source: Callable[[int, Dict[str, Any]], str],
+    log_context: str = "records",
 ) -> int:
     import chromadb
     from chromadb.config import Settings
@@ -438,14 +444,10 @@ def _chromadb_build(
 
     _dbg(
         "H1",
-        "an1_build_index.py:_chromadb_build",
+        "an1_build_index.py:_chromadb_build_from_records",
         "Start build",
-        {"json_path": str(json_path), "persist_dir": str(persist_dir), "collection": collection_name},
+        {"context": log_context, "persist_dir": str(persist_dir), "collection": collection_name, "records": len(records)},
     )
-
-    if not json_path.exists():
-        _dbg("H1", "an1_build_index.py:_chromadb_build", "json missing", {"json_path": str(json_path)})
-        raise FileNotFoundError(f"Missing JSON at: {json_path}")
 
     os.makedirs(persist_dir, exist_ok=True)
 
@@ -460,22 +462,8 @@ def _chromadb_build(
         pass
     collection = client.create_collection(collection_name)
 
-    _dbg("H5", "an1_build_index.py:_chromadb_build", "Loading embedding model", {"model": "all-MiniLM-L6-v2"})
+    _dbg("H5", "an1_build_index.py:_chromadb_build_from_records", "Loading embedding model", {"model": "all-MiniLM-L6-v2"})
     model = SentenceTransformer("all-MiniLM-L6-v2")
-
-    raw = json_path.read_text(encoding="utf-8", errors="ignore")
-    try:
-        data = _parse_json_lenient(raw)
-    except Exception as e:
-        _dbg("H1", "an1_build_index.py:_chromadb_build", "JSON parse failed", {"error": str(e), "bytes": len(raw)})
-        data = _extract_records_fallback(raw)
-        _dbg("H1", "an1_build_index.py:_chromadb_build", "Fallback extracted records", {"count": len(data)})
-
-    if not isinstance(data, list):
-        _dbg("H1", "an1_build_index.py:_chromadb_build", "Unexpected JSON shape", {"type": str(type(data))})
-        raise ValueError(f"Expected JSON list of records: {json_path}")
-
-    _dbg("H1", "an1_build_index.py:_chromadb_build", "Loaded records", {"count": len(data)})
 
     batch_size = 64
     ids: List[str] = []
@@ -483,7 +471,6 @@ def _chromadb_build(
     texts: List[str] = []
 
     global_chunk_index = 0
-    source_rel = str(json_path.relative_to(BASE_DIR)).replace("\\", "/")
 
     def flush_batch() -> None:
         nonlocal ids, metadatas, texts
@@ -493,9 +480,10 @@ def _chromadb_build(
         collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
         ids, metadatas, texts = [], [], []
 
-    for rec_i, rec in enumerate(tqdm(data, desc=tqdm_desc)):
+    for rec_i, rec in enumerate(tqdm(records, desc=tqdm_desc)):
         if not isinstance(rec, dict):
             continue
+        source_rel = get_source(rec_i, rec)
         docs = record_to_docs(rec)
         for doc_kind, suttaid, comm_id, doc_text in docs:
             if not doc_text.strip():
@@ -521,7 +509,92 @@ def _chromadb_build(
 
     flush_batch()
     n = int(collection.count())
-    _dbg("H2", "an1_build_index.py:_chromadb_build", "Build finished", {"collection_count": n})
+    _dbg("H2", "an1_build_index.py:_chromadb_build_from_records", "Build finished", {"collection_count": n})
+    return n
+
+
+def _chromadb_build(
+    *,
+    json_path: Path,
+    persist_dir: Path,
+    collection_name: str,
+    record_to_docs: Callable[[Dict[str, Any]], List[Tuple[str, str, str, str]]],
+    id_prefix: str,
+    tqdm_desc: str,
+) -> int:
+    _dbg(
+        "H1",
+        "an1_build_index.py:_chromadb_build",
+        "Start build",
+        {"json_path": str(json_path), "persist_dir": str(persist_dir), "collection": collection_name},
+    )
+
+    if not json_path.exists():
+        _dbg("H1", "an1_build_index.py:_chromadb_build", "json missing", {"json_path": str(json_path)})
+        raise FileNotFoundError(f"Missing JSON at: {json_path}")
+
+    raw = json_path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        data = _parse_json_lenient(raw)
+    except Exception as e:
+        _dbg("H1", "an1_build_index.py:_chromadb_build", "JSON parse failed", {"error": str(e), "bytes": len(raw)})
+        data = _extract_records_fallback(raw)
+        _dbg("H1", "an1_build_index.py:_chromadb_build", "Fallback extracted records", {"count": len(data)})
+
+    if not isinstance(data, list):
+        _dbg("H1", "an1_build_index.py:_chromadb_build", "Unexpected JSON shape", {"type": str(type(data))})
+        raise ValueError(f"Expected JSON list of records: {json_path}")
+
+    _dbg("H1", "an1_build_index.py:_chromadb_build", "Loaded records", {"count": len(data)})
+
+    records = [r for r in data if isinstance(r, dict)]
+    source_rel = str(json_path.relative_to(BASE_DIR)).replace("\\", "/")
+
+    return _chromadb_build_from_records(
+        records=records,
+        persist_dir=persist_dir,
+        collection_name=collection_name,
+        record_to_docs=record_to_docs,
+        id_prefix=id_prefix,
+        tqdm_desc=tqdm_desc,
+        get_source=lambda _i, _rec: source_rel,
+        log_context=str(json_path),
+    )
+
+
+def build_valid_suttas_index() -> int:
+    """
+    Build one Chroma collection over every sutta in `_merged_item_details()` (same merge + validity rules as the API).
+    Persists under CHROMA_VALID_SUTTAS_DIR / collection `valid_suttas`.
+    """
+    import an1_app as app
+
+    items = app._merged_item_details()
+    records: List[Dict[str, Any]] = [
+        {
+            "sutta_id": it.suttaid,
+            "sutta": it.sutta,
+            "commentary": it.commentry,
+            "chain": it.chain,
+        }
+        for it in items
+    ]
+
+    def get_source(rec_i: int, rec: Dict[str, Any]) -> str:
+        sid = str(rec.get("sutta_id") or rec.get("suttaid") or "").strip()
+        return f"merged:{sid}" if sid else f"merged:rec{rec_i}"
+
+    n = _chromadb_build_from_records(
+        records=records,
+        persist_dir=PERSIST_VALID_SUTTAS_DIR,
+        collection_name=COLLECTION_VALID_SUTTAS,
+        record_to_docs=_record_to_docs_an2,
+        id_prefix="vs",
+        tqdm_desc="Valid suttas (merged)",
+        get_source=get_source,
+        log_context="valid_suttas_merged",
+    )
+    print(f"valid_suttas: {len(records)} suttas → {n} Chroma rows (chunked sutta/commentary/chain docs)")
     return n
 
 
@@ -571,11 +644,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Build Chroma AN1 / AN2 RAG indexes.")
     ap.add_argument(
         "--book",
-        choices=["an1", "an2", "an3", "all"],
+        choices=["an1", "an2", "an3", "all", "valid"],
         default="all",
-        help="Which index to build (default: all = an2+an3; an1 is opt-in).",
+        help="Which index to build. 'valid' = one collection of all API-valid suttas (merged corpus). Default all = an2+an3; an1 is opt-in.",
     )
     args = ap.parse_args()
+    if args.book == "valid":
+        build_valid_suttas_index()
+        raise SystemExit(0)
     if args.book in ("an1",):
         build_an1_index()
     if args.book in ("an2", "all"):

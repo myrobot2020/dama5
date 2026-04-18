@@ -1,15 +1,15 @@
 import json
+import math
 import os
 import re
 import threading
 import time
 import uuid
-import zlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional, Set, Tuple
+from typing import Annotated, Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 
 def _load_dotenv(repo_root: Path) -> None:
@@ -50,7 +50,6 @@ import requests
 import an1_build_index as an1_build
 import an1_vertex_core as vx
 import dama_diy_auth as dama_diy
-import dama_firebase_auth as dama_fb
 from dama_auth_ui import register_auth_ui_routes, session_https_only, session_secret
 from fastapi.staticfiles import StaticFiles
 from an1_build_index import (
@@ -59,6 +58,13 @@ from an1_build_index import (
     _extract_records_fallback,
     _normalize_suttaid_an2,
     _parse_json_lenient,
+)
+
+import llm_prompts as lp
+from sutta_display_titles import (
+    dotted_id_from_an_suttaid,
+    ensure_english_sutta_suffix,
+    english_nav_title_for_dotted_id,
 )
 
 
@@ -82,11 +88,61 @@ GONG_MP3_PATH = (
     else (_GONG_DEFAULT_MP3 if _GONG_DEFAULT_MP3.is_file() else (BASE_DIR / "temp_gong.wav"))
 )
 
-OLLAMA_BASE_URL = "http://localhost:11434"
+# #region agent log
+def _dbg8249(hypothesis_id: str, location: str, message: str, data: Optional[Dict[str, Any]] = None, run_id: str = "pre-fix") -> None:
+    try:
+        payload = {
+            "sessionId": "8249d8",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(str((BASE_DIR / "debug-8249d8.log").resolve()), "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# #endregion agent log
+
+_OLLAMA_BASE_ENV = (
+    os.environ.get("DAMA_OLLAMA_BASE_URL", "").strip()
+    or os.environ.get("OLLAMA_BASE_URL", "").strip()
+    or "http://localhost:11434"
+)
+OLLAMA_BASE_URL = _OLLAMA_BASE_ENV
 OLLAMA_MODEL = "mistral:instruct"
+_OLLAMA_NUM_PREDICT_ENV = os.environ.get("DAMA_OLLAMA_NUM_PREDICT", "").strip()
+try:
+    OLLAMA_NUM_PREDICT = int(_OLLAMA_NUM_PREDICT_ENV) if _OLLAMA_NUM_PREDICT_ENV else 150
+except Exception:
+    OLLAMA_NUM_PREDICT = 150
 
 # Reuse HTTP connections (Ollama + metadata server, etc.)
 _HTTP = requests.Session()
+
+
+def _agent_log(hypothesis_id: str, location: str, message: str, data: Dict[str, Any]) -> None:
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+
+        payload = {
+            "sessionId": "1bf87e",
+            "runId": os.environ.get("DAMA_DEBUG_RUN_ID", "run"),
+            "hypothesisId": str(hypothesis_id),
+            "location": str(location),
+            "message": str(message),
+            "data": data,
+            "timestamp": int(_time.time() * 1000),
+        }
+        with open("debug-1bf87e.log", "a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion agent log
 
 # Cache for SuttaCentral fetched plain-text (keyed by sc_slug, e.g. "an2.2/en/sujato?...").
 _SC_TEXT_CACHE: Dict[str, str] = {}
@@ -97,11 +153,7 @@ _RAW_META_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 # Bumped when RAG/LLM behavior changes (shown in GET /api/index_status so you know the server reloaded).
 AN1_APP_BUILD = "2026-04-13-gong-autoplay-gesture"
 
-# Short reply for greetings / smalltalk — the citation-only LLM prompt is wrong for this (it still sees random retrieval).
-_CHAT_ONLY_REPLY = (
-    "Hi there. Ask anything about the AN1 or AN2 teachings (suttas, commentary, or themes), "
-    "or click an (AN …) or (cAN …) citation in an answer to open the full text in Reference."
-)
+# Greeting/smalltalk reply text: llm_prompts.MSG_CHAT_ONLY_REPLY (citation-only LLM path skipped for these).
 
 _CHAT_SUBSTANTIVE_HINT = re.compile(
     r"\b(?:"
@@ -176,11 +228,14 @@ def _is_chat_only_message(question: str) -> bool:
     if re.search(r"\d", q):
         return False
     low = q.lower()
-    if "?" in q and not re.search(r"how\s+are\s+you", low):
-        return False
     if _CHAT_SUBSTANTIVE_HINT.search(low):
         return False
     norm = _normalize_chat_probe(q)
+    # Allow very short conversational probes even if they include a '?'
+    if "?" in q and not re.search(r"how\s+are\s+you", low):
+        if norm in ("really", "why", "huh", "what", "ok", "okay"):
+            return True
+        return False
     if norm in _CHAT_GREETING_PHRASES:
         return True
     if len(norm) <= 10:
@@ -245,40 +300,25 @@ DEBUG_LOG_PATH = BASE_DIR / "debug-655121.log"
 
 @dataclass
 class _AuthCtx:
-    firebase_uid: Optional[str] = None
     diy_user_id: Optional[int] = None
 
 
+def _timings_enabled_for_request(_auth: _AuthCtx) -> bool:
+    """Include timings in /api/query when local dev, or DAMA_SHOW_TIMINGS / DAMA_DEBUG_TIMINGS is set."""
+    v = (os.environ.get("DAMA_SHOW_TIMINGS", "") or os.environ.get("DAMA_DEBUG_TIMINGS", "")).strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return (os.environ.get("DAMA_RUNTIME", "").strip().lower() == "local")
+
+
 def _require_api_user(request: Request, authorization: Optional[str]) -> _AuthCtx:
-    """Firebase Bearer when enabled; else DIY session; else open when both off."""
-    if dama_fb.firebase_enabled():
-        if not authorization or not authorization.strip().lower().startswith("bearer "):
-            raise HTTPException(status_code=401, detail="Authorization Bearer token required")
-        tok = authorization.split(" ", 1)[1].strip()
-        try:
-            return _AuthCtx(firebase_uid=dama_fb.verify_id_token(tok))
-        except Exception as e:
-            raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}") from e
-    if dama_diy.diy_auth_enabled() and not dama_fb.firebase_enabled():
+    """DIY session cookie when DAMA_DIY_AUTH is on; else open (no user)."""
+    if dama_diy.diy_auth_enabled():
         uid = request.session.get("uid")
         if uid is None:
             raise HTTPException(status_code=401, detail="Not logged in")
         return _AuthCtx(diy_user_id=int(uid))
     return _AuthCtx()
-
-
-def _fallback_diy_id_for_firebase_uid(uid: str) -> int:
-    """
-    Local/dev fallback when Firebase is enabled but Firestore is unavailable.
-    Produces a stable positive 31-bit integer id from uid for per-user local storage.
-    """
-    u = (uid or "").strip().encode("utf-8", errors="ignore")
-    return int(zlib.crc32(u) & 0x7FFFFFFF)
-
-
-def _firestore_unavailable_error(e: Exception) -> bool:
-    s = str(e or "")
-    return ("firestore.googleapis.com" in s) or ("SERVICE_DISABLED" in s) or ("PermissionDenied" in s)
 
 
 def _chat_storage_dir(diy_user_id: Optional[int]) -> Path:
@@ -483,6 +523,7 @@ class Chunk(BaseModel):
     kind: str = ""
     book: str = ""
     distance: Optional[float] = None
+    rerank_score: Optional[float] = None
     text: str
 
 
@@ -490,6 +531,7 @@ class QueryResponse(BaseModel):
     chunks: List[Chunk]
     answer: str = ""
     used_llm: bool = False
+    timings_ms: Optional[Dict[str, Any]] = None
 
 
 class BuildResponse(BaseModel):
@@ -501,11 +543,14 @@ class ItemSummary(BaseModel):
     suttaid: str
     title: str = ""
     has_commentary: bool = False
+    nikaya: str = "AN"
 
 
 class ItemDetail(BaseModel):
     suttaid: str
     sutta: str
+    sutta_name_en: str = ""
+    sutta_name_pali: str = ""
     commentry: str = ""
     commentary_id: str = ""
     sc_id: str = ""
@@ -515,6 +560,7 @@ class ItemDetail(BaseModel):
     aud_start_s: float = 0.0
     aud_end_s: float = 0.0
     chain: Optional[Dict[str, Any]] = None
+    valid: bool = False
 
 
 class ChatHistoryAppend(BaseModel):
@@ -531,6 +577,8 @@ _lock = threading.RLock()
 _embed_model: Optional[Any] = None
 _reranker: Optional[Any] = None
 _items_cache: Dict[str, List[ItemDetail]] = {}
+# (items, max mtime, ids with explicit valid:false in per-folder JSON — strip monolithic duplicates).
+_per_folder_items_cache: Optional[Tuple[List[ItemDetail], float, FrozenSet[str]]] = None
 _collection_cache: Dict[str, Any] = {}
 _chroma_client_cache: Dict[str, Any] = {}
 
@@ -1012,7 +1060,16 @@ def _retrieve(embed_model: Any, collection: Any, query: str, k: int) -> List[Chu
             pairs = [[query, c.text] for c in candidates]
             scores = reranker.predict(pairs)
             scored = sorted(zip(candidates, scores), key=lambda x: -x[1])
-            candidates = [c for c, _ in scored]
+            out_scored: List[Chunk] = []
+            for c, s in scored:
+                try:
+                    v = float(s)
+                except Exception:
+                    v = float("nan")
+                out_scored.append(
+                    c.model_copy(update={"rerank_score": v if math.isfinite(v) else None})
+                )
+            candidates = out_scored
         except Exception:
             pass
 
@@ -1046,7 +1103,7 @@ def _retrieve_merged_local(embed_model: Any, query: str, k: int, *, book: str = 
     Retrieve from local Chroma for the requested book(s), then merge rank + pair-inject.
 
     Convention in this repo:
-      - book=all searches AN2+AN3 only (AN1 is opt-in).
+      - book=all searches AN2 only (AN1/AN3 are disabled in this repo).
       - book=an1 searches AN1 only.
     """
     want = (book or "all").strip().lower()
@@ -1056,7 +1113,7 @@ def _retrieve_merged_local(embed_model: Any, query: str, k: int, *, book: str = 
     # Decide which books to include
     include: List[str]
     if want == "all":
-        include = ["an2", "an3"]
+        include = ["an2"]
     else:
         include = [want]
 
@@ -1290,13 +1347,66 @@ def _ollama_chat(messages: list, temperature: float = 0, num_ctx: int = 4096, ti
             "model": OLLAMA_MODEL,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature, "num_ctx": num_ctx},
+            "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": OLLAMA_NUM_PREDICT},
         },
         timeout=timeout,
     )
     if resp.status_code != 200:
         raise RuntimeError(f"Ollama returned {resp.status_code}: {resp.text[:500]}")
     return resp.json().get("message", {}).get("content", "")
+
+
+def _ollama_chat_stream_with_timings(
+    messages: list, temperature: float = 0, num_ctx: int = 4096, timeout: int = 600
+) -> Tuple[str, Optional[int], int]:
+    """
+    Stream Ollama chat response so we can measure first-token time.
+
+    Returns: (full_text, first_token_ms, done_ms)
+    """
+    t0 = time.perf_counter()
+    resp = _HTTP.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json={
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": OLLAMA_NUM_PREDICT},
+        },
+        timeout=timeout,
+        stream=True,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Ollama returned {resp.status_code}: {resp.text[:500]}")
+
+    out: List[str] = []
+    first_token_ms: Optional[int] = None
+    try:
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("error"):
+                raise RuntimeError(f"Ollama error: {str(obj.get('error'))[:500]}")
+            msg = obj.get("message") or {}
+            delta = msg.get("content") or ""
+            if delta:
+                if first_token_ms is None:
+                    first_token_ms = int((time.perf_counter() - t0) * 1000)
+                out.append(str(delta))
+            if bool(obj.get("done")):
+                break
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+    done_ms = int((time.perf_counter() - t0) * 1000)
+    return "".join(out), first_token_ms, done_ms
 
 
 def _sanitize_chat_answer_light(text: str) -> str:
@@ -1352,6 +1462,200 @@ def _chunks_for_llm_paired_by_suttaid(
     return out[:max_n]
 
 
+def _chunk_relevance_key(query: str, c: Chunk) -> Tuple[int, float, float]:
+    """
+    Higher is better.
+      1) lexical score (int)
+      2) reranker score if present (float)
+      3) negative distance (float) so smaller distance ranks higher
+    """
+    lex = int(_lexical_score(query, c.text))
+    rr = float(c.rerank_score) if c.rerank_score is not None else float("-inf")
+    dist = float(c.distance) if c.distance is not None else 1e9
+    return (lex, rr, -dist)
+
+
+def _select_coherent_llm_chunks(
+    query: str,
+    chunks: List[Chunk],
+    *,
+    max_total: int = 5,
+    support_ratio: float = 0.90,
+    max_suttaids: int = 2,
+) -> List[Chunk]:
+    """
+    Enforce "topic purity" before LLM prompting:
+    - pick the dominant suttaid group by aggregate score
+    - keep at most one additional suttaid whose score is within support_ratio of the best
+    - for each selected suttaid, keep up to 1 sutta + 1 commentary (best-scoring within kind)
+    - cap total chunks
+    """
+    chunks = _dedupe_chunks_keep_order([c for c in (chunks or []) if (c.suttaid or "").strip()])
+    if not chunks:
+        return []
+
+    by_sid: Dict[str, List[Chunk]] = {}
+    order: List[str] = []
+    for c in chunks:
+        sid = (c.suttaid or "").strip()
+        if sid not in by_sid:
+            by_sid[sid] = []
+            order.append(sid)
+        by_sid[sid].append(c)
+
+    def sid_best_vals(sid: str) -> Tuple[int, float]:
+        grp = by_sid.get(sid) or []
+        best_lex = 0
+        best_rr = float("-inf")
+        for x in grp:
+            best_lex = max(best_lex, int(_lexical_score(query, x.text)))
+            if x.rerank_score is not None:
+                try:
+                    v = float(x.rerank_score)
+                    if math.isfinite(v):
+                        best_rr = max(best_rr, v)
+                except Exception:
+                    pass
+        return best_lex, best_rr
+
+    scored_sids: List[Tuple[str, int, float]] = []
+    for sid in order:
+        bl, br = sid_best_vals(sid)
+        scored_sids.append((sid, bl, br))
+
+    # Sort by (best rerank if any, then best lexical)
+    any_rr = any(br != float("-inf") for _, _, br in scored_sids)
+    if any_rr:
+        scored_sids.sort(key=lambda t: (t[2], t[1]), reverse=True)
+        best_val = scored_sids[0][2] if scored_sids else float("-inf")
+        keep = [t for t in scored_sids if t[2] >= best_val * support_ratio]
+    else:
+        scored_sids.sort(key=lambda t: t[1], reverse=True)
+        best_val = float(scored_sids[0][1]) if scored_sids else 0.0
+        keep = [t for t in scored_sids if float(t[1]) >= best_val * support_ratio]
+
+    keep_sids = [sid for sid, _, _ in keep][: max(1, int(max_suttaids))]
+
+    out: List[Chunk] = []
+    for sid in keep_sids:
+        grp = by_sid.get(sid) or []
+        sut = [x for x in grp if (x.kind or "").lower() == "sutta"]
+        com = [x for x in grp if (x.kind or "").lower() == "commentary"]
+        # Best per kind
+        if sut:
+            sut.sort(key=lambda c: _chunk_relevance_key(query, c), reverse=True)
+            out.append(sut[0])
+        if com and len(out) < max_total:
+            com.sort(key=lambda c: _chunk_relevance_key(query, c), reverse=True)
+            out.append(com[0])
+        if len(out) >= max_total:
+            break
+
+    return _dedupe_chunks_keep_order(out)[:max_total]
+
+
+def _llm_chunks_for_prompt(
+    query: str,
+    chunks: List[Chunk],
+    *,
+    distributed: bool,
+) -> List[Chunk]:
+    """Prefer coherent suttaid groups; if that yields nothing (e.g. missing suttaid), use raw retrieval."""
+    max_suttaids = 3 if distributed else 2
+    sel = _select_coherent_llm_chunks(
+        query,
+        chunks,
+        max_total=5,
+        support_ratio=0.90,
+        max_suttaids=max_suttaids,
+    )
+    if sel:
+        return sel
+    base = _dedupe_chunks_keep_order([c for c in (chunks or []) if (c.text or "").strip()])
+    return base[:10]
+
+
+def _light_rephrases(q: str) -> List[str]:
+    """Very light query variants; keep boring and cheap."""
+    base = (q or "").strip()
+    if not base:
+        return []
+    v = [
+        base,
+        base.lower(),
+        base.replace("?", "").strip(),
+    ]
+    out: List[str] = []
+    seen: Set[str] = set()
+    for x in v:
+        t = (x or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out[:3]
+
+
+def _first_hit_retrieval_loop(
+    retrieve_fn: Callable[[str, int], List[Chunk]],
+    query: str,
+    k: int,
+    *,
+    rephrase_fn: Optional[Callable[[str], List[str]]] = None,
+) -> Tuple[str, List[str], List[Chunk]]:
+    tried = [str(query or "").strip()]
+    if rephrase_fn is not None:
+        for q2 in rephrase_fn(query):
+            q2 = (q2 or "").strip()
+            if q2 and q2 not in tried:
+                tried.append(q2)
+    tried = [q for q in tried if q]
+    for q in tried:
+        got = retrieve_fn(q, k) or []
+        got = [c for c in got if (c.text or "").strip()]
+        if got:
+            return q, tried, got
+    return str(query or "").strip(), tried, []
+
+
+def _is_distributed_teaching(query: str, chunks: List[Chunk], *, ratio: float = 0.97) -> bool:
+    """
+    Return True when multiple suttaids are similarly relevant (no clear dominant).
+    Heuristic: compare top2 suttaid group scores (rerank if available else lexical).
+    """
+    chunks = [c for c in (chunks or []) if (c.suttaid or "").strip()]
+    if len(chunks) < 2:
+        return False
+    by_sid: Dict[str, List[Chunk]] = {}
+    for c in chunks:
+        by_sid.setdefault((c.suttaid or "").strip(), []).append(c)
+
+    scores: List[float] = []
+    any_rr = any(c.rerank_score is not None for c in chunks)
+    for sid, grp in by_sid.items():
+        if any_rr:
+            best = None
+            for x in grp:
+                if x.rerank_score is None:
+                    continue
+                try:
+                    v = float(x.rerank_score)
+                except Exception:
+                    continue
+                if not math.isfinite(v):
+                    continue
+                best = v if best is None else max(best, v)
+            scores.append(best if best is not None else float("-inf"))
+        else:
+            scores.append(float(max(int(_lexical_score(query, x.text)) for x in grp)))
+    scores = sorted([s for s in scores if s != float("-inf")], reverse=True)
+    if len(scores) < 2:
+        return False
+    if scores[0] == 0:
+        return False
+    return (scores[1] / scores[0]) >= float(ratio)
+
+
 def _format_llm_passage(idx: int, c: Chunk) -> str:
     kind = (c.kind or "").lower()
     if kind == "sutta":
@@ -1390,93 +1694,47 @@ def _llm_system_and_user_blocks(
     allowed_can: Optional[Set[str]] = None,
     extra_user_instructions: str = "",
 ) -> Tuple[str, str]:
+    _agent_log(
+        "A",
+        "an1_app.py:_llm_system_and_user_blocks",
+        "building_llm_blocks",
+        {
+            "book": book,
+            "query_len": len(query or ""),
+            "balanced_n": len(balanced or []),
+            "allowed_an_n": len(allowed_an or set()),
+            "allowed_can_n": len(allowed_can or set()),
+            "extra_user_instructions_len": len(extra_user_instructions or ""),
+        },
+    )
     numbered = "\n\n".join(_format_llm_passage(i + 1, c) for i, c in enumerate(balanced))
     if _norm_book(book) == "an2":
-        system = (
-            "You are a friendly, conversational assistant answering from AN2 (Numerical Discourses, book of twos) "
-            "sutta text, teacher commentary, and optional CHAIN passages below.\n"
-            "- kind 'commentary' = teacher notes (after TEACHER COMMENTARY:). Cite with (cAN …) using commentary_id.\n"
-            "- kind 'sutta' = sutta text (after SUTTA:). Cite with (AN …) using suttaid from the header.\n"
-            "- kind 'chain' = a short enumerated list of the two linked themes for that discourse (study aid). "
-            "It is NOT verbatim scripture — do not quote CHAIN lines as the Buddha’s words.\n\n"
-            "DISPLAY: The chat must stay short. Do NOT paste long sutta or commentary blocks — the app has "
-            "clickable (AN …)/(cAN …) citations and a Reference panel with full text. Paraphrase clearly in a few "
-            "sentences; optional at most one short phrase in quotation marks per cited id (roughly ≤25 words) only "
-            "if essential; otherwise no block quotes.\n\n"
-            "STRICT RULES:\n"
-            "1. Prefer staying within ONE suttaid: sutta, commentary, and chain for the same id when present.\n"
-            "2. Ground every (AN …) in the sutta passage for that id and every (cAN …) in the teacher commentary "
-            "for that id, but explain in your own words; do not reproduce full discourses in the answer.\n"
-            "3. Never put (cAN …) on sutta-only ideas or (AN …) on commentary-only ideas.\n"
-            "4. You may describe the CHAIN (the two linked ideas) in plain language without pretending it is a sutta citation.\n"
-            "5. If nothing in PASSAGES answers the question, say: "
-            "\"The provided excerpts do not contain information to answer this question.\"\n"
-            "6. Do NOT guess or use outside knowledge."
+        system, user = lp.SYSTEM_AN2, lp.build_user_an2(
+            query,
+            numbered,
+            allowed_an=allowed_an,
+            allowed_can=allowed_can,
+            extra_user_instructions=extra_user_instructions,
         )
-        allow = ""
-        if allowed_an or allowed_can:
-            allow = "\n\nALLOWED CITATIONS (strict):\n"
-            if allowed_an:
-                allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
-            if allowed_can:
-                allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
-            allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
-        extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
-        user = (
-            f"Question: {query}\n\nPASSAGES (suttaid order; headers for you only):\n{numbered}\n\n"
-            "Answer concisely with (AN …)/(cAN …) citations; use CHAIN only as conceptual context, not as quoted scripture."
-            f"{allow}{extra}"
+        _agent_log(
+            "A",
+            "an1_app.py:_llm_system_and_user_blocks",
+            "built_llm_blocks",
+            {"system_len": len(system or ""), "user_len": len(user or ""), "mode": "an2"},
         )
         return system, user
-
-    system = (
-        "You are a friendly, conversational assistant answering from AN1 sutta and teacher commentary "
-        "passages below.\n"
-        "- kind 'commentary' = teacher notes (text after TEACHER COMMENTARY:). Cite with (cAN …) using "
-        "commentary_id from that passage’s header.\n"
-        "- kind 'sutta' = sutta text (after SUTTA:). Cite with (AN …) using suttaid from that passage’s header.\n"
-        "- kind 'chain' = a short enumerated pair of linked themes for that discourse (study aid). "
-        "It is NOT verbatim scripture — do not quote CHAIN lines as the Buddha’s words.\n\n"
-        "DISPLAY: The chat must stay short. Do NOT paste long sutta or commentary blocks — the app has "
-        "clickable (AN …)/(cAN …) citations and a Reference panel with full text. Paraphrase the teaching in "
-        "a few clear sentences; optional at most one short phrase in quotation marks per cited id "
-        "(roughly ≤25 words) only if essential; otherwise no block quotes.\n\n"
-        "STRICT RULES:\n"
-        "1. PASSAGES are grouped by suttaid: sutta for that id appears before teacher commentary for the "
-        "same id. Prefer sutta, teacher notes, and chain from the SAME suttaid in one answer. Do NOT pair "
-        "(AN 1.2) with (cAN 1.5.6) unless you write one clear sentence explaining why two discourses are "
-        "needed; otherwise stay within one suttaid pair.\n"
-        "2. For your main example, explain the sutta point in your own words and add (AN …); then summarize "
-        "the teacher’s angle and add (cAN …) when commentary is in PASSAGES — both grounded in that suttaid.\n"
-        "3. Never put (cAN …) on sutta-only ideas or (AN …) on commentary-only ideas.\n"
-        "4. You may describe the CHAIN (the two linked ideas) in plain language without pretending it is a sutta citation.\n"
-        "5. If you use quotation marks before (AN …), the quoted words must appear verbatim under SUTTA: in a "
-        "kind 'sutta' block for that id (keep the quote very short). If you use quotation marks before (cAN …), "
-        "they must be verbatim from TEACHER COMMENTARY: in a kind 'commentary' block. Never call teacher wording "
-        "the sutta or tag it (AN …).\n"
-        "6. If PASSAGES include a sutta about water, pools, oysters, etc., do not claim excerpts omit water.\n"
-        "7. If only commentary or only sutta appears for the relevant suttaid, say what is missing briefly.\n"
-        "8. Do not write 'Excerpt' / internal passage numbers from headers.\n"
-        "9. If the question uses 'this' / 'it' without a clear topic, ask ONE short clarifying question.\n"
-        "10. If nothing in PASSAGES answers the question, say: "
-        "\"The provided excerpts do not contain information to answer this question.\"\n"
-        "11. Do NOT guess or use outside knowledge."
+    system, user = lp.SYSTEM_AN1, lp.build_user_an1(
+        query,
+        numbered,
+        allowed_an=allowed_an,
+        allowed_can=allowed_can,
+        extra_user_instructions=extra_user_instructions,
     )
-    allow = ""
-    if allowed_an or allowed_can:
-        allow = "\n\nALLOWED CITATIONS (strict):\n"
-        if allowed_an:
-            allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
-        if allowed_can:
-            allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
-        allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
-    extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
-    user = (
-        f"Question: {query}\n\nPASSAGES (grouped by suttaid: sutta for an id, then teacher notes for that id; "
-        f"headers for you only — do not echo them):\n{numbered}\n\n"
-        "Answer concisely with (AN …)/(cAN …) citations; use CHAIN only as conceptual context, not as quoted scripture; "
-        "avoid unrelated cross-citations; never call teacher notes the sutta."
-        f"{allow}{extra}"
+    _agent_log(
+        "A",
+        "an1_app.py:_llm_system_and_user_blocks",
+        "built_llm_blocks",
+        {"system_len": len(system or ""), "user_len": len(user or ""), "mode": "an1"},
     )
     return system, user
 
@@ -1490,36 +1748,13 @@ def _llm_vertex_mixed_blocks(
     extra_user_instructions: str = "",
 ) -> Tuple[str, str]:
     numbered = "\n\n".join(_format_llm_passage(i + 1, c) for i, c in enumerate(balanced))
-    system = (
-        "You are a friendly, conversational assistant answering from AN1 and/or AN2 (Anguttara Nikāya) "
-        "passages below. Each block header may include book: an1 or an2.\n"
-        "- kind 'sutta' / 'commentary': cite with (AN …) and (cAN …); ground each citation in the matching passage.\n"
-        "- kind 'chain': conceptual link labels (study aid), not scripture; never quote CHAIN lines as the Buddha’s words.\n\n"
-        "DISPLAY: Keep the chat answer short. Do NOT paste long sutta or commentary blocks — citations open full "
-        "text in the Reference panel. Paraphrase; optional at most one short quoted phrase per cited id "
-        "(roughly ≤25 words) only if essential.\n\n"
-        "STRICT RULES:\n"
-        "1. Prefer one suttaid (and one book) for your main example when possible.\n"
-        "2. Never put (cAN …) on sutta-only ideas or (AN …) on commentary-only ideas.\n"
-        "3. If nothing in PASSAGES answers the question, say: "
-        "\"The provided excerpts do not contain information to answer this question.\"\n"
-        "4. Do NOT guess or use outside knowledge."
+    return lp.SYSTEM_VERTEX_MIXED, lp.build_user_vertex_mixed(
+        query,
+        numbered,
+        allowed_an=allowed_an,
+        allowed_can=allowed_can,
+        extra_user_instructions=extra_user_instructions,
     )
-    allow = ""
-    if allowed_an or allowed_can:
-        allow = "\n\nALLOWED CITATIONS (strict):\n"
-        if allowed_an:
-            allow += " - AN: " + ", ".join(sorted(allowed_an)) + "\n"
-        if allowed_can:
-            allow += " - cAN: " + ", ".join(sorted(allowed_can)) + "\n"
-        allow += "Only cite IDs from this list. If an ID is not listed, you must not cite it.\n"
-    extra = ("\n\n" + extra_user_instructions.strip()) if (extra_user_instructions or "").strip() else ""
-    user = (
-        f"Question: {query}\n\nPASSAGES (headers for you only):\n{numbered}\n\n"
-        "Answer concisely with correct (AN …)/(cAN …) citations; use CHAIN only as non-quoted context when present."
-        f"{allow}{extra}"
-    )
-    return system, user
 
 
 def _call_llm_vertex(
@@ -1529,10 +1764,18 @@ def _call_llm_vertex(
     allowed_an: Optional[Set[str]] = None,
     allowed_can: Optional[Set[str]] = None,
     extra_user_instructions: str = "",
+    timings_ms: Optional[Dict[str, Any]] = None,
 ) -> str:
+    t_p0 = time.perf_counter()
     balanced = _chunks_for_llm_paired_by_suttaid(chunks, max_n=10, include_chain=False)
     if not balanced:
-        return "No passages were retrieved for this question. Try Rebuild or rephrase."
+        _agent_log(
+            "B",
+            "an1_app.py:_call_llm_vertex",
+            "no_balanced_chunks_returning_msg_no_passages",
+            {"query_len": len(query or ""), "chunks_n": len(chunks or [])},
+        )
+        return lp.MSG_NO_PASSAGES_LLM
     has_an2 = any((c.book or "").lower() == "an2" for c in balanced)
     if has_an2:
         system, user = _llm_vertex_mixed_blocks(
@@ -1547,7 +1790,16 @@ def _call_llm_vertex(
             allowed_can=allowed_can,
             extra_user_instructions=extra_user_instructions,
         )
-    return _sanitize_chat_answer_light(vx.gemini_generate(system, user, temperature=0.2))
+    if timings_ms is not None:
+        timings_ms["prompt_build_ms"] = int((time.perf_counter() - t_p0) * 1000)
+    t_l0 = time.perf_counter()
+    out = vx.gemini_generate(system, user, temperature=0.2)
+    llm_ms = int((time.perf_counter() - t_l0) * 1000)
+    if timings_ms is not None:
+        # Vertex path here is non-streaming; "first token" ~= "done".
+        timings_ms["llm_first_token_ms"] = llm_ms
+        timings_ms["llm_done_ms"] = llm_ms
+    return _sanitize_chat_answer_light(out)
 
 
 def _vertex_llm_enabled() -> bool:
@@ -1558,6 +1810,22 @@ def _vertex_llm_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _llm_provider_name() -> str:
+    """Which backend answers chat LLM calls (must match _call_llm routing)."""
+    if vx.an1_vertex_enabled() or _vertex_llm_enabled():
+        return "vertex"
+    return "ollama"
+
+
+def _ollama_reachable(timeout_s: float = 2.0) -> bool:
+    """True if this process can reach Ollama at OLLAMA_BASE_URL (same check the chat path needs)."""
+    try:
+        r = _HTTP.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=timeout_s)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def _call_llm(
     query: str,
     chunks: List[Chunk],
@@ -1566,6 +1834,7 @@ def _call_llm(
     allowed_an: Optional[Set[str]] = None,
     allowed_can: Optional[Set[str]] = None,
     extra_user_instructions: str = "",
+    timings_ms: Optional[Dict[str, Any]] = None,
 ) -> str:
     if vx.an1_vertex_enabled() or _vertex_llm_enabled():
         return _call_llm_vertex(
@@ -1574,11 +1843,19 @@ def _call_llm(
             allowed_an=allowed_an,
             allowed_can=allowed_can,
             extra_user_instructions=extra_user_instructions,
+            timings_ms=timings_ms,
         )
 
+    t_p0 = time.perf_counter()
     balanced = _chunks_for_llm_paired_by_suttaid(chunks, max_n=10, include_chain=False)
     if not balanced:
-        return "No passages were retrieved for this question. Try Rebuild or rephrase."
+        _agent_log(
+            "B",
+            "an1_app.py:_call_llm",
+            "no_balanced_chunks_returning_msg_no_passages",
+            {"query_len": len(query or ""), "chunks_n": len(chunks or [])},
+        )
+        return lp.MSG_NO_PASSAGES_LLM
     has_an2 = any((c.book or "").lower() == "an2" for c in balanced)
     if has_an2:
         system, user = _llm_vertex_mixed_blocks(
@@ -1595,7 +1872,160 @@ def _call_llm(
             extra_user_instructions=extra_user_instructions,
         )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    return _sanitize_chat_answer_light(_ollama_chat(messages, num_ctx=8192, timeout=300))
+    if timings_ms is not None:
+        timings_ms["prompt_build_ms"] = int((time.perf_counter() - t_p0) * 1000)
+    text, first_ms, done_ms = _ollama_chat_stream_with_timings(messages, num_ctx=8192, timeout=300)
+    if timings_ms is not None:
+        timings_ms["llm_first_token_ms"] = first_ms if first_ms is not None else done_ms
+        timings_ms["llm_done_ms"] = done_ms
+    return _sanitize_chat_answer_light(text)
+
+
+def _item_passes_corpus_index_gate(it: ItemDetail) -> bool:
+    """Only list / merge suttas with valid=true in source JSON, body text, and an audio file (chain optional)."""
+    if not it.valid:
+        return False
+    if not (it.sutta or "").strip():
+        return False
+    if not (it.aud_file or "").strip():
+        return False
+    return True
+
+
+def _coerce_valid_flag(raw: Any) -> bool:
+    """JSON `valid` field: bool, int, or string (avoid bool('false') == True)."""
+    if raw is True:
+        return True
+    if raw is False:
+        return False
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return raw != 0
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("1", "true", "yes", "y", "on"):
+            return True
+        if s in ("0", "false", "no", "n", "off", ""):
+            return False
+    return False
+
+
+def _item_detail_from_sutta_shaped_dict(
+    obj: Dict[str, Any],
+    *,
+    valid_default_when_missing: bool = True,
+) -> Optional[ItemDetail]:
+    """One record like an2/an3 JSON (sutta_id, sutta, commentary, …). Monolithic lists default valid=True when key absent; per-folder `an*/suttas/*.json` uses valid_default_when_missing=False so only explicit valid:true ships."""
+    if not isinstance(obj, dict):
+        return None
+    sid = _normalize_suttaid_an2(obj.get("sutta_id") or obj.get("suttaid"))
+    sutta = str(obj.get("sutta") or "").strip()
+    comm = _commentary_body(obj)
+    cid = _normalize_commentary_id(obj.get("commentary_id") or "") if sid else ""
+    if not cid and sid:
+        cid = _normalize_commentary_id("c" + sid)
+    sc_id = str(obj.get("sc_id") or "").strip()
+    sc_url = str(obj.get("sc_url") or "").strip()
+    sc_sutta = str(obj.get("sc_sutta") or "").strip()
+    aud_file = str(obj.get("aud_file") or "").strip()
+    try:
+        aud_start_s = float(obj.get("aud_start_s") or 0.0)
+    except Exception:
+        aud_start_s = 0.0
+    try:
+        aud_end_s = float(obj.get("aud_end_s") or 0.0)
+    except Exception:
+        aud_end_s = 0.0
+    ch = obj.get("chain")
+    chain_dict = ch if isinstance(ch, dict) else None
+    if not sid or not sutta:
+        return None
+    sn_en = str(obj.get("sutta_name_en") or "").strip()
+    sn_pl = str(obj.get("sutta_name_pali") or "").strip()
+    if "valid" in obj:
+        valid = _coerce_valid_flag(obj.get("valid"))
+    else:
+        valid = bool(valid_default_when_missing)
+    return ItemDetail(
+        suttaid=sid,
+        sutta=sutta,
+        sutta_name_en=sn_en,
+        sutta_name_pali=sn_pl,
+        commentry=comm,
+        commentary_id=cid,
+        sc_id=sc_id,
+        sc_url=sc_url,
+        sc_sutta=sc_sutta,
+        aud_file=aud_file,
+        aud_start_s=aud_start_s,
+        aud_end_s=aud_end_s,
+        chain=chain_dict,
+        valid=valid,
+    )
+
+
+def _per_folder_suttas_max_mtime() -> float:
+    """Latest st_mtime among `an1/suttas` … `an11/suttas` per-sutta JSON (excludes `_*.json`)."""
+    mx = 0.0
+    for n in range(1, 12):
+        d = BASE_DIR / f"an{n}" / "suttas"
+        if not d.is_dir():
+            continue
+        for path in d.glob("*.json"):
+            nl = path.name.lower()
+            if nl == "_index.json" or nl.startswith("_"):
+                continue
+            try:
+                mx = max(mx, float(path.stat().st_mtime))
+            except OSError:
+                pass
+    return mx
+
+
+def _load_per_sutta_folder_items() -> List[ItemDetail]:
+    """Load `an1/suttas/*.json` … `an11/suttas/*.json` (same shape as an3 records). Cached until JSON on disk changes."""
+    global _per_folder_items_cache
+    cur_mtime = _per_folder_suttas_max_mtime()
+    if _per_folder_items_cache is not None:
+        cached_items, cached_mtime, _suppress = _per_folder_items_cache
+        if cached_mtime >= cur_mtime:
+            return cached_items
+    items: List[ItemDetail] = []
+    suppressed_by_file: Set[str] = set()
+    for n in range(1, 12):
+        d = BASE_DIR / f"an{n}" / "suttas"
+        if not d.is_dir():
+            continue
+        for path in sorted(d.glob("*.json")):
+            nl = path.name.lower()
+            if nl == "_index.json" or nl.startswith("_"):
+                continue
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+                obj = json.loads(raw)
+            except Exception as e:
+                _dbg(
+                    "H1",
+                    "an1_app.py:_load_per_sutta_folder_items",
+                    "skip bad json",
+                    {"path": str(path), "error": str(e)},
+                )
+                continue
+            if isinstance(obj, dict) and "valid" in obj and not _coerce_valid_flag(obj.get("valid")):
+                sid_bad = _normalize_suttaid_an2(obj.get("sutta_id") or obj.get("suttaid"))
+                if sid_bad:
+                    suppressed_by_file.add(sid_bad)
+            it = _item_detail_from_sutta_shaped_dict(obj, valid_default_when_missing=False)
+            if it and _item_passes_corpus_index_gate(it):
+                items.append(it)
+    cur_mtime = _per_folder_suttas_max_mtime()
+    _per_folder_items_cache = (items, cur_mtime, frozenset(suppressed_by_file))
+    _dbg(
+        "H1",
+        "an1_app.py:_load_per_sutta_folder_items",
+        "loaded folder suttas",
+        {"count": len(items), "suppressed_invalid": len(suppressed_by_file)},
+    )
+    return items
 
 
 def _merged_item_details() -> List[ItemDetail]:
@@ -1612,6 +2042,19 @@ def _merged_item_details() -> List[ItemDetail]:
         if it.suttaid not in seen:
             out.append(it)
             seen.add(it.suttaid)
+    # Per-sutta files on disk supersede monolithic rows with the same suttaid.
+    for it in _load_per_sutta_folder_items():
+        if it.suttaid in seen:
+            out = [x for x in out if x.suttaid != it.suttaid]
+        else:
+            seen.add(it.suttaid)
+        out.append(it)
+    # Drop ids explicitly marked valid:false in an*/suttas/*.json (also removes monolithic dupes).
+    suppressed: FrozenSet[str] = frozenset()
+    if _per_folder_items_cache is not None:
+        suppressed = _per_folder_items_cache[2]
+    if suppressed:
+        out = [it for it in out if _normalize_suttaid_an2(it.suttaid) not in suppressed]
     return out
 
 
@@ -1619,13 +2062,9 @@ def _find_item_by_suttaid(suttaid: str) -> Optional[ItemDetail]:
     want = _normalize_suttaid_an1(suttaid)
     if not want:
         return None
-    for it in _load_items("an1"):
+    for it in _merged_item_details():
         if _normalize_suttaid_an1(it.suttaid) == want:
             return it
-    for it in _load_items("an2"):
-        if _normalize_suttaid_an2(it.suttaid) == _normalize_suttaid_an2(want):
-            return it
-    for it in _load_items("an3"):
         if _normalize_suttaid_an2(it.suttaid) == _normalize_suttaid_an2(want):
             return it
     return None
@@ -1635,24 +2074,20 @@ def _find_item_by_commentary_id(commentary_id: str) -> Optional[ItemDetail]:
     want = _normalize_commentary_id(commentary_id)
     if not want:
         return None
-    for it in _load_items("an1"):
-        if _normalize_commentary_id(it.commentary_id) == want:
-            return it
-    for it in _load_items("an2"):
-        if _normalize_commentary_id(it.commentary_id) == want:
-            return it
-    for it in _load_items("an3"):
+    for it in _merged_item_details():
         if _normalize_commentary_id(it.commentary_id) == want:
             return it
     return None
 
 
 def _invalidate_items_cache(book: Optional[str] = None) -> None:
-    global _items_cache
+    global _items_cache, _per_folder_items_cache
     if book is None:
         _items_cache.clear()
+        _per_folder_items_cache = None
     else:
         _items_cache.pop(_norm_book(book), None)
+        _per_folder_items_cache = None
 
 
 def _invalidate_collection_cache(book: Optional[str] = None) -> None:
@@ -1705,46 +2140,11 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
             if not isinstance(obj, dict):
                 continue
             if b in ("an2", "an3"):
-                sid = _normalize_suttaid_an2(obj.get("sutta_id") or obj.get("suttaid"))
-                sutta = str(obj.get("sutta") or "").strip()
-                comm = _commentary_body(obj)
-                # Prefer explicit commentary_id (e.g. "cAN 2.1.2") if present in JSON; else derive from sutta id.
-                cid = _normalize_commentary_id(obj.get("commentary_id") or "") if sid else ""
-                if not cid and sid:
-                    cid = _normalize_commentary_id("c" + sid)
-                sc_id = str(obj.get("sc_id") or "").strip()
-                sc_url = str(obj.get("sc_url") or "").strip()
-                sc_sutta = str(obj.get("sc_sutta") or "").strip()
-                aud_file = str(obj.get("aud_file") or "").strip()
-                try:
-                    aud_start_s = float(obj.get("aud_start_s") or 0.0)
-                except Exception:
-                    aud_start_s = 0.0
-                try:
-                    aud_end_s = float(obj.get("aud_end_s") or 0.0)
-                except Exception:
-                    aud_end_s = 0.0
-                ch = obj.get("chain")
-                chain_dict = ch if isinstance(ch, dict) else None
-                if not sid or not sutta:
-                    continue
-                items.append(
-                    ItemDetail(
-                        suttaid=sid,
-                        sutta=sutta,
-                        commentry=comm,
-                        commentary_id=cid,
-                        sc_id=sc_id,
-                        sc_url=sc_url,
-                        sc_sutta=sc_sutta,
-                        aud_file=aud_file,
-                        aud_start_s=aud_start_s,
-                        aud_end_s=aud_end_s,
-                        chain=chain_dict,
-                    )
-                )
+                it = _item_detail_from_sutta_shaped_dict(obj, valid_default_when_missing=False)
+                if it:
+                    items.append(it)
             else:
-                sid = _normalize_suttaid_an1(obj.get("suttaid"))
+                sid = _normalize_suttaid_an1(obj.get("sutta_id") or obj.get("suttaid"))
                 sutta = str(obj.get("sutta") or "").strip()
                 comm = _commentary_body(obj)
                 cid = _normalize_commentary_id(obj.get("commentary_id") or "")
@@ -1766,10 +2166,18 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                 chain_dict = ch if isinstance(ch, dict) else None
                 if not sid or not sutta:
                     continue
+                sn_en = str(obj.get("sutta_name_en") or "").strip()
+                sn_pl = str(obj.get("sutta_name_pali") or "").strip()
+                if "valid" in obj:
+                    valid = _coerce_valid_flag(obj.get("valid"))
+                else:
+                    valid = True
                 items.append(
                     ItemDetail(
                         suttaid=sid,
                         sutta=sutta,
+                        sutta_name_en=sn_en,
+                        sutta_name_pali=sn_pl,
                         commentry=comm,
                         commentary_id=cid,
                         sc_id=sc_id,
@@ -1779,20 +2187,31 @@ def _load_items(book: str = "an1") -> List[ItemDetail]:
                         aud_start_s=aud_start_s,
                         aud_end_s=aud_end_s,
                         chain=chain_dict,
+                        valid=valid,
                     )
                 )
     else:
         _dbg("H1", "an1_app.py:_load_items", "Unexpected JSON top-level type", {"type": str(type(data))})
 
+    items = [it for it in items if _item_passes_corpus_index_gate(it)]
     _items_cache[b] = items
-    _dbg("H1", "an1_app.py:_load_items", "Loaded items", {"book": b, "count": len(items)})
+    _dbg("H1", "an1_app.py:_load_items", "Loaded items (gated)", {"book": b, "count": len(items)})
     return items
 
 
 def _item_title(item: ItemDetail) -> str:
     # lightweight label for the left nav
-    s = (item.sutta or "").strip().replace("\n", " ")
-    s = re.sub(r"\s+", " ", s)
+    en = (item.sutta_name_en or "").strip()
+    if en:
+        s = ensure_english_sutta_suffix(en)
+    else:
+        dotted = dotted_id_from_an_suttaid(item.suttaid)
+        mapped = english_nav_title_for_dotted_id(dotted)
+        if mapped:
+            s = mapped
+        else:
+            s = (item.sutta or "").strip().replace("\n", " ")
+            s = re.sub(r"\s+", " ", s)
     return s[:72] + ("…" if len(s) > 72 else "")
 
 
@@ -1821,6 +2240,20 @@ app.add_middleware(
 )
 
 register_auth_ui_routes(app, BASE_DIR)
+
+# Optional CORS for separate front-end origins (e.g. dhamma-light on Cloudflare). Comma-separated.
+# Dev with Vite proxy needs no CORS. Example: DAMA_CORS_ORIGINS=https://app.example.com,http://localhost:8080
+_cors_origins = [o.strip() for o in os.environ.get("DAMA_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    from starlette.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Serve audio assets under /aud/ (real teacher recordings + audio_map.json)
 AUD_DIR = (BASE_DIR / "aud").resolve()
@@ -2118,7 +2551,7 @@ def serve_gong_mp3() -> FileResponse:
 @app.get("/api/items")
 def api_items(q: str = Query(default=""), book: str = Query("all")) -> JSONResponse:
     bq = (book or "all").strip().lower()
-    bk = "all" if bq not in ("an1", "an2") else bq
+    bk = "all" if bq not in ("an1", "an2", "an3") else bq
     items = _merged_item_details() if bk == "all" else _load_items(_norm_book(bk))
     qn = (q or "").strip().lower()
     filtered: List[ItemDetail] = []
@@ -2141,6 +2574,7 @@ def api_items(q: str = Query(default=""), book: str = Query("all")) -> JSONRespo
             suttaid=i.suttaid,
             title=_item_title(i),
             has_commentary=bool((i.commentry or "").strip()),
+            nikaya="AN",
         ).model_dump()
         for i in filtered
     ]
@@ -2148,21 +2582,25 @@ def api_items(q: str = Query(default=""), book: str = Query("all")) -> JSONRespo
     return JSONResponse({"items": out})
 
 
-@app.get("/api/item/{suttaid}", response_model=ItemDetail)
+@app.get("/api/item/{suttaid}", response_model=ItemDetail, response_model_exclude_defaults=False)
 def api_item(suttaid: str, book: str = Query("all")) -> ItemDetail:
     bq = (book or "all").strip().lower()
     if bq in ("an1", "an2"):
         for it in _load_items(bq):
             if it.suttaid == suttaid:
+                if not it.valid:
+                    raise HTTPException(status_code=404, detail=f"Sutta not in corpus (valid=false): {suttaid}")
                 return _apply_raw_meta_to_item(it)
     else:
         hit = _find_item_by_suttaid(suttaid)
         if hit:
+            if not hit.valid:
+                raise HTTPException(status_code=404, detail=f"Sutta not in corpus (valid=false): {suttaid}")
             return _apply_raw_meta_to_item(hit)
     raise HTTPException(status_code=404, detail=f"Unknown suttaid: {suttaid}")
 
 
-@app.get("/api/item_by_commentary_id/{commentary_id}", response_model=ItemDetail)
+@app.get("/api/item_by_commentary_id/{commentary_id}", response_model=ItemDetail, response_model_exclude_defaults=False)
 def api_item_by_commentary_id(commentary_id: str, book: str = Query("all")) -> ItemDetail:
     want = (commentary_id or "").strip()
     if not want:
@@ -2171,10 +2609,14 @@ def api_item_by_commentary_id(commentary_id: str, book: str = Query("all")) -> I
     if bq in ("an1", "an2"):
         for it in _load_items(bq):
             if (it.commentary_id or "").strip() == want:
+                if not it.valid:
+                    raise HTTPException(status_code=404, detail=f"Commentary not in corpus (valid=false): {want}")
                 return _apply_raw_meta_to_item(it)
     else:
         hit = _find_item_by_commentary_id(want)
         if hit:
+            if not hit.valid:
+                raise HTTPException(status_code=404, detail=f"Commentary not in corpus (valid=false): {want}")
             return _apply_raw_meta_to_item(hit)
     raise HTTPException(status_code=404, detail=f"Unknown commentary_id: {want}")
 
@@ -2203,19 +2645,8 @@ def api_conversations_list(
 ) -> JSONResponse:
     auth = _require_api_user(request, authorization)
     with _lock:
-        if auth.firebase_uid:
-            try:
-                dama_fb.prune_empty_conversations(auth.firebase_uid)
-                rows = dama_fb.list_conversations(auth.firebase_uid)
-            except Exception as e:
-                if not _firestore_unavailable_error(e):
-                    raise
-                fb_local = _fallback_diy_id_for_firebase_uid(auth.firebase_uid)
-                _prune_empty_conversations(fb_local)
-                rows = _list_conversations_merged(fb_local)
-        else:
-            _prune_empty_conversations(auth.diy_user_id)
-            rows = _list_conversations_merged(auth.diy_user_id)
+        _prune_empty_conversations(auth.diy_user_id)
+        rows = _list_conversations_merged(auth.diy_user_id)
     return JSONResponse({"conversations": rows})
 
 
@@ -2226,26 +2657,6 @@ def api_conversations_create(
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> JSONResponse:
     auth = _require_api_user(request, authorization)
-    if auth.firebase_uid:
-        with _lock:
-            try:
-                out = dama_fb.create_conversation(auth.firebase_uid, (body.title or "").strip() or "New chat")
-                return JSONResponse(out)
-            except Exception as e:
-                if not _firestore_unavailable_error(e):
-                    raise
-                fb_local = _fallback_diy_id_for_firebase_uid(auth.firebase_uid)
-                cid = str(uuid.uuid4())
-                title = (body.title or "").strip() or "New chat"
-                now = int(time.time() * 1000)
-                idx = [
-                    r
-                    for r in _read_conversation_index(fb_local)
-                    if isinstance(r, dict) and str(r.get("id", "")).lower() != cid
-                ]
-                idx.append({"id": cid, "title": title, "updated_ts": now})
-                _write_conversation_index(idx, fb_local)
-                return JSONResponse({"id": cid, "title": title, "updated_ts": now})
     cid = str(uuid.uuid4())
     title = (body.title or "").strip() or "New chat"
     now = int(time.time() * 1000)
@@ -2271,19 +2682,6 @@ def api_conversation_messages_get(
         cid_norm = str(uuid.UUID(conversation_id))
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid conversation id") from e
-    if auth.firebase_uid:
-        try:
-            items = dama_fb.get_messages(auth.firebase_uid, conversation_id)
-        except Exception as e:
-            if not _firestore_unavailable_error(e):
-                raise
-            fb_local = _fallback_diy_id_for_firebase_uid(auth.firebase_uid)
-            path = _conversation_jsonl_path(conversation_id, fb_local)
-            items = _read_jsonl_messages(path)
-        return JSONResponse(
-            {"conversation_id": cid_norm, "items": items},
-            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
-        )
     path = _conversation_jsonl_path(conversation_id, auth.diy_user_id)
     items = _read_jsonl_messages(path)
     return JSONResponse(
@@ -2310,47 +2708,6 @@ def api_conversation_messages_append(
         raise HTTPException(status_code=400, detail="empty question")
     if not astrip or astrip == "(no answer)":
         raise HTTPException(status_code=400, detail="refusing to store without a model answer")
-    if auth.firebase_uid:
-        with _lock:
-            try:
-                dama_fb.append_message(
-                    auth.firebase_uid,
-                    conversation_id,
-                    question=qstrip,
-                    answer=astrip,
-                    latency_ms=int(body.latency_ms),
-                )
-                return JSONResponse({"ok": True, "conversation_id": cid_norm})
-            except Exception as e:
-                if not _firestore_unavailable_error(e):
-                    raise
-                fb_local = _fallback_diy_id_for_firebase_uid(auth.firebase_uid)
-                path = _conversation_jsonl_path(conversation_id, fb_local)
-                rec = {
-                    "ts": int(time.time() * 1000),
-                    "q": qstrip,
-                    "a": astrip,
-                    "latency_ms": int(body.latency_ms),
-                }
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                rows = [dict(r) for r in _read_conversation_index(fb_local) if isinstance(r, dict)]
-                found = False
-                snippet_q = qstrip.replace("\n", " ")
-                snippet_q = re.sub(r"\s+", " ", snippet_q)
-                snippet = (snippet_q[:56] + "…") if len(snippet_q) > 56 else snippet_q
-                for r in rows:
-                    if str(r.get("id", "")).lower() == cid_norm.lower():
-                        r["updated_ts"] = rec["ts"]
-                        t = str(r.get("title") or "").strip()
-                        if (not t or t == "New chat") and snippet:
-                            r["title"] = snippet
-                        found = True
-                        break
-                if not found:
-                    rows.append({"id": cid_norm, "title": snippet or "Chat", "updated_ts": rec["ts"]})
-                _write_conversation_index(rows, fb_local)
-                return JSONResponse({"ok": True, "conversation_id": cid_norm})
     path = _conversation_jsonl_path(conversation_id, auth.diy_user_id)
     rec = {
         "ts": int(time.time() * 1000),
@@ -2411,6 +2768,8 @@ def api_index_status() -> JSONResponse:
             b = vx.ensure_bundle_loaded(PERSIST_DIR)
             n, n_an1_v, n_an2_v, n_an3_v = _vertex_chunk_counts_by_book(b)
             meta = vx.bundle_meta_for_status(b)
+            lp = _llm_provider_name()
+            c2 = _collection_count_safe("an2")
             return JSONResponse(
                 {
                     "exists": n > 0,
@@ -2419,12 +2778,14 @@ def api_index_status() -> JSONResponse:
                     "vertex_an2_chunks": n_an2_v,
                     "vertex_an3_chunks": n_an3_v,
                     "mode": "vertex",
+                    "llm_provider": lp,
+                    "ollama_ok": None,
                     "persist_dir": str(PERSIST_DIR.resolve()),
                     "an1_path": str(AN1_PATH.resolve()),
                     "an2_path": str(AN2_PATH.resolve()),
                     "an3_path": str(AN3_PATH.resolve()),
-                    "an2_count": _collection_count_safe("an2"),
-                    "an3_count": _collection_count_safe("an3"),
+                    "an2_count": c2,
+                    "an3_count": 0,
                     "runtime": os.environ.get("DAMA_RUNTIME", "").strip() or None,
                     "build": AN1_APP_BUILD,
                     "bundle_gcs": os.environ.get("AN1_VERTEX_BUNDLE_GCS_URI", "").strip(),
@@ -2438,6 +2799,8 @@ def api_index_status() -> JSONResponse:
                 }
             )
         except Exception as e:
+            lp = _llm_provider_name()
+            c2 = _collection_count_safe("an2")
             return JSONResponse(
                 {
                     "exists": False,
@@ -2446,27 +2809,30 @@ def api_index_status() -> JSONResponse:
                     "vertex_an2_chunks": 0,
                     "vertex_an3_chunks": 0,
                     "mode": "vertex",
+                    "llm_provider": lp,
+                    "ollama_ok": None,
                     "persist_dir": str(PERSIST_DIR.resolve()),
                     "an1_path": str(AN1_PATH.resolve()),
                     "an2_path": str(AN2_PATH.resolve()),
                     "an3_path": str(AN3_PATH.resolve()),
-                    "an2_count": _collection_count_safe("an2"),
-                    "an3_count": _collection_count_safe("an3"),
+                    "an2_count": c2,
+                    "an3_count": 0,
                     "build": AN1_APP_BUILD,
                     "error": str(e),
                 }
             )
 
-    c1 = _collection_count_safe("an1")
     c2 = _collection_count_safe("an2")
-    c3 = _collection_count_safe("an3")
+    lp = _llm_provider_name()
     return JSONResponse(
         {
-            "exists": bool(c1 > 0 or c2 > 0 or c3 > 0),
-            "count": c1,
+            "exists": bool(c2 > 0),
+            "count": 0,
             "an2_count": c2,
-            "an3_count": c3,
+            "an3_count": 0,
             "mode": "local_chroma",
+            "llm_provider": lp,
+            "ollama_ok": (_ollama_reachable() if lp == "ollama" else None),
             "persist_dir": str(PERSIST_DIR.resolve()),
             "persist_an2_dir": str(PERSIST_AN2_DIR.resolve()),
             "persist_an3_dir": str(PERSIST_AN3_DIR.resolve()),
@@ -2483,7 +2849,7 @@ def api_build(
     request: Request,
     book: str = Query(
         "all",
-        description="Build: all (AN2+AN3), an1 only (opt-in), an2 only, or an3 only (local Chroma). Vertex path rebuilds local Chroma + vertex_corpus shards (manifest); optional AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS.",
+        description="Build: an2 only (default). Vertex path rebuilds local Chroma + vertex_corpus shards (manifest); optional AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS.",
     ),
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> BuildResponse:
@@ -2493,11 +2859,12 @@ def api_build(
     with _lock:
         _dbg("H2", "an1_app.py:api_build", "Build requested", {"book": b})
         try:
+            if b in ("an1", "an3"):
+                raise HTTPException(status_code=400, detail="Only AN2 is supported in this app build (book=an2 or all).")
             if vx.an1_vertex_enabled():
                 from an1_build_vertex_bundle import write_vertex_corpus
 
                 an1_build.build_an2_index()
-                an1_build.build_an3_index()
                 corpus_dir = PERSIST_DIR / "vertex_corpus"
                 upload_base = os.environ.get("AN1_VERTEX_CORPUS_UPLOAD_BASE_GCS", "").strip()
                 write_vertex_corpus(corpus_dir, upload_base_gcs=upload_base)
@@ -2527,8 +2894,6 @@ def api_build(
 
             if AN2_PATH.exists():
                 an1_build.build_an2_index()
-            if AN3_PATH.exists():
-                an1_build.build_an3_index()
             _invalidate_items_cache()
             _invalidate_collection_cache()
             c1 = _collection_count_safe("an1")
@@ -2546,7 +2911,9 @@ def api_query(
     req: QueryRequest,
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> QueryResponse:
-    _require_api_user(request, authorization)
+    auth = _require_api_user(request, authorization)
+    t_api0 = time.perf_counter()
+    timing: Dict[str, Any] = {}
     with _lock:
         # Respect client-provided settings; do not force LLM usage.
         book = (req.book or "all").strip().lower()
@@ -2577,9 +2944,12 @@ def api_query(
                 "Chat-only message; skip retrieval/LLM",
                 {"question_len": len(req.question)},
             )
-            return QueryResponse(chunks=[], answer=_CHAT_ONLY_REPLY, used_llm=False)
+            timing["mode"] = "chat-only"
+            timing["total_ms"] = int((time.perf_counter() - t_api0) * 1000)
+            return QueryResponse(chunks=[], answer=lp.MSG_CHAT_ONLY_REPLY, used_llm=False, timings_ms=timing)
 
         if vx.an1_vertex_enabled():
+            timing["mode"] = "vertex"
             try:
                 bundle = vx.ensure_bundle_loaded(PERSIST_DIR)
             except Exception as e:
@@ -2588,54 +2958,88 @@ def api_query(
                     status_code=400,
                     detail=f"Vertex bundle not available: {e}. Rebuild (POST /api/build) or set AN1_VERTEX_BUNDLE_GCS_URI.",
                 ) from e
+            def _rf(q: str, k: int) -> List[Chunk]:
+                return _filter_chat_chunks(_retrieve_vertex(bundle, q, k, book=book))
+
+            t_r0 = time.perf_counter()
             try:
-                chunks = _retrieve_vertex(bundle, req.question, req.k, book=book)
+                query_used, queries_tried, chunks = _first_hit_retrieval_loop(_rf, req.question, req.k, rephrase_fn=_light_rephrases)
             except Exception as e:
                 _dbg("H2", "an1_app.py:api_query", "Vertex retrieval failed", {"error": str(e)})
                 raise HTTPException(status_code=502, detail=f"Vertex retrieval failed: {e}") from e
-            chunks = _filter_chat_chunks(chunks)
+            timing["retrieve_ms"] = int((time.perf_counter() - t_r0) * 1000)
+            timing["query_used"] = query_used
+            timing["queries_tried"] = queries_tried[:3]
 
             used_llm = False
             answer = ""
             if req.use_llm:
-                used_llm = True
-                llm_chunks = _filter_chat_chunks(chunks[:10])
-                allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
-                try:
-                    _dbg(
-                        "H3",
-                        "an1_app.py:api_query",
-                        "Calling Vertex Gemini",
-                        {"chunks": len(llm_chunks), "model": vx.chat_model_name()},
+                if not chunks:
+                    answer = lp.fallback_answer_text(req.question)
+                    _agent_log(
+                        "C",
+                        "an1_app.py:chat_fallback_answer_text",
+                        "used_fallback_answer_text",
+                        {"question_len": len((req.question or "")), "answer_len": len(answer or "")},
                     )
-                    answer = _call_llm(
-                        req.question,
-                        llm_chunks,
-                        book=book,
-                        allowed_an=allowed_an,
-                        allowed_can=allowed_can,
-                    )
-                    bad = _illegal_citations(answer, allowed_an, allowed_can)
-                    if bad:
-                        answer2 = _call_llm(
-                            req.question,
+                    used_llm = False
+                else:
+                    used_llm = True
+                    distributed = _is_distributed_teaching(query_used, chunks)
+                    llm_chunks = _llm_chunks_for_prompt(query_used, chunks, distributed=distributed)
+                    allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
+                    try:
+                        _dbg(
+                            "H3",
+                            "an1_app.py:api_query",
+                            "Calling Vertex Gemini",
+                            {"chunks": len(llm_chunks), "model": vx.chat_model_name()},
+                        )
+                        t_post0 = time.perf_counter()
+                        answer = _call_llm(
+                            query_used,
                             llm_chunks,
                             book=book,
                             allowed_an=allowed_an,
                             allowed_can=allowed_can,
-                            extra_user_instructions=(
-                                "Your previous draft used citations that are NOT allowed: "
-                                + ", ".join(bad)
-                                + ". Regenerate the answer using ONLY the ALLOWED CITATIONS list."
-                            ),
+                            extra_user_instructions=lp.extra_instruction_distributed_teaching(distributed),
+                            timings_ms=timing,
                         )
-                        bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
-                        answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
-                except Exception as e:
-                    _dbg("H3", "an1_app.py:api_query", "Vertex LLM failed", {"error": str(e)})
-                    raise HTTPException(status_code=502, detail=f"Vertex LLM call failed: {e}") from e
+                        bad = _illegal_citations(answer, allowed_an, allowed_can)
+                        if bad:
+                            t_l1 = time.perf_counter()
+                            answer2 = _call_llm(
+                                req.question,
+                                llm_chunks,
+                                book=book,
+                                allowed_an=allowed_an,
+                                allowed_can=allowed_can,
+                                extra_user_instructions=lp.extra_instruction_retry_illegal_citations(bad),
+                            )
+                            timing["llm_retry_ms"] = int((time.perf_counter() - t_l1) * 1000)
+                            bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
+                            answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
+                        timing["post_citations_ms"] = int((time.perf_counter() - t_post0) * 1000)
+                    except Exception as e:
+                        _dbg("H3", "an1_app.py:api_query", "Vertex LLM failed", {"error": str(e)})
+                        raise HTTPException(status_code=502, detail=f"Vertex LLM call failed: {e}") from e
+            else:
+                # Retrieval-only mode: if nothing found, return a conversational fallback.
+                if not chunks:
+                    answer = lp.fallback_answer_text(req.question)
+                    _agent_log(
+                        "C",
+                        "an1_app.py:chat_fallback_answer_text",
+                        "used_fallback_answer_text",
+                        {"question_len": len((req.question or "")), "answer_len": len(answer or "")},
+                    )
+                else:
+                    answer = _synthesize_retrieval_only_answer(chunks)
 
-            return QueryResponse(chunks=chunks, answer=answer, used_llm=used_llm)
+            timing["used_llm"] = bool(used_llm)
+            timing["chunks"] = len(chunks)
+            timing["total_ms"] = int((time.perf_counter() - t_api0) * 1000)
+            return QueryResponse(chunks=chunks, answer=answer, used_llm=used_llm, timings_ms=timing)
 
         if not PERSIST_DIR.exists() and not PERSIST_AN2_DIR.exists():
             _dbg(
@@ -2649,10 +3053,19 @@ def api_query(
                 detail="No local index found. Run Rebuild (POST /api/build) first.",
             )
 
+        timing["mode"] = "local"
         chunks: List[Chunk] = []
         try:
+            t_r0 = time.perf_counter()
             embed_model = _get_embed_model()
-            chunks = _retrieve_merged_local(embed_model, req.question, req.k, book=book)
+
+            def _rf(q: str, k: int) -> List[Chunk]:
+                return _filter_chat_chunks(_retrieve_merged_local(embed_model, q, k, book=book))
+
+            query_used, queries_tried, chunks = _first_hit_retrieval_loop(_rf, req.question, req.k, rephrase_fn=_light_rephrases)
+            timing["retrieve_ms"] = int((time.perf_counter() - t_r0) * 1000)
+            timing["query_used"] = query_used
+            timing["queries_tried"] = queries_tried[:3]
         except Exception as e:
             # Most common cause: HF hub download retries (503/504) making the UI appear "stuck".
             _dbg(
@@ -2661,50 +3074,107 @@ def api_query(
                 "Embedding retrieval failed; using lexical fallback",
                 {"error": str(e)[:500]},
             )
-            chunks = _lexical_retrieve_from_items(req.question, req.k, book=book)
-        chunks = _filter_chat_chunks(chunks)
+            t_r1 = time.perf_counter()
+            def _rf2(q: str, k: int) -> List[Chunk]:
+                return _filter_chat_chunks(_lexical_retrieve_from_items(q, k, book=book))
+
+            query_used, queries_tried, chunks = _first_hit_retrieval_loop(_rf2, req.question, req.k, rephrase_fn=_light_rephrases)
+            timing["retrieve_ms"] = int((time.perf_counter() - t_r1) * 1000)
+            timing["query_used"] = query_used
+            timing["queries_tried"] = queries_tried[:3]
 
         used_llm = False
         answer = ""
         if req.use_llm:
-            used_llm = True
-            llm_chunks = _filter_chat_chunks(chunks[:10])
-            allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
-            try:
-                _dbg(
-                    "H3",
-                    "an1_app.py:api_query",
-                    "Calling Ollama (merged AN1+AN2)",
-                    {"chunks": len(llm_chunks), "model": OLLAMA_MODEL},
+            if not chunks:
+                answer = lp.fallback_answer_text(req.question)
+                _agent_log(
+                    "C",
+                    "an1_app.py:chat_fallback_answer_text",
+                    "used_fallback_answer_text",
+                    {"question_len": len((req.question or "")), "answer_len": len(answer or "")},
                 )
-                answer = _call_llm(
-                    req.question,
-                    llm_chunks,
-                    book="all",
-                    allowed_an=allowed_an,
-                    allowed_can=allowed_can,
-                )
-                bad = _illegal_citations(answer, allowed_an, allowed_can)
-                if bad:
-                    answer2 = _call_llm(
-                        req.question,
+                used_llm = False
+            else:
+                used_llm = True
+                distributed = _is_distributed_teaching(query_used, chunks)
+                llm_chunks = _llm_chunks_for_prompt(query_used, chunks, distributed=distributed)
+                allowed_an, allowed_can = _allowlists_from_chunks(llm_chunks)
+                try:
+                    # #region agent log
+                    _dbg8249(
+                        "H4",
+                        "an1_app.py:api_query:ollama",
+                        "about to call ollama llm",
+                        {
+                            "distributed": bool(distributed),
+                            "ollama_reachable": bool(_ollama_reachable()),
+                            "chunks": len(llm_chunks),
+                        },
+                    )
+                    # #endregion agent log
+                    _dbg(
+                        "H3",
+                        "an1_app.py:api_query",
+                        "Calling Ollama (merged AN1+AN2)",
+                        {"chunks": len(llm_chunks), "model": OLLAMA_MODEL},
+                    )
+                    t_post0 = time.perf_counter()
+                    answer = _call_llm(
+                        query_used,
                         llm_chunks,
                         book="all",
                         allowed_an=allowed_an,
                         allowed_can=allowed_can,
-                        extra_user_instructions=(
-                            "Your previous draft used citations that are NOT allowed: "
-                            + ", ".join(bad)
-                            + ". Regenerate the answer using ONLY the ALLOWED CITATIONS list."
-                        ),
+                        extra_user_instructions=lp.extra_instruction_distributed_teaching(distributed),
+                        timings_ms=timing,
                     )
-                    bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
-                    answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
-            except Exception as e:
-                _dbg("H3", "an1_app.py:api_query", "Ollama failed", {"error": str(e)})
-                raise HTTPException(status_code=502, detail=f"Ollama LLM call failed: {e}") from e
+                    bad = _illegal_citations(answer, allowed_an, allowed_can)
+                    if bad:
+                        t_l1 = time.perf_counter()
+                        answer2 = _call_llm(
+                            req.question,
+                            llm_chunks,
+                            book="all",
+                            allowed_an=allowed_an,
+                            allowed_can=allowed_can,
+                            extra_user_instructions=lp.extra_instruction_retry_illegal_citations(bad),
+                        )
+                        timing["llm_retry_ms"] = int((time.perf_counter() - t_l1) * 1000)
+                        bad2 = _illegal_citations(answer2, allowed_an, allowed_can)
+                        answer = answer2 if not bad2 else _synthesize_retrieval_only_answer(chunks)
+                    timing["post_citations_ms"] = int((time.perf_counter() - t_post0) * 1000)
+                except Exception as e:
+                    # #region agent log
+                    _dbg8249(
+                        "H5",
+                        "an1_app.py:api_query:ollama",
+                        "ollama llm exception",
+                        {
+                            "exc_type": type(e).__name__,
+                            "exc": str(e)[:800],
+                        },
+                    )
+                    # #endregion agent log
+                    _dbg("H3", "an1_app.py:api_query", "Ollama failed", {"error": str(e)})
+                    raise HTTPException(status_code=502, detail=f"Ollama LLM call failed: {e}") from e
+        else:
+            # Retrieval-only mode: if nothing found, return a conversational fallback.
+            if not chunks:
+                answer = lp.fallback_answer_text(req.question)
+                _agent_log(
+                    "C",
+                    "an1_app.py:chat_fallback_answer_text",
+                    "used_fallback_answer_text",
+                    {"question_len": len((req.question or "")), "answer_len": len(answer or "")},
+                )
+            else:
+                answer = _synthesize_retrieval_only_answer(chunks)
 
-        return QueryResponse(chunks=chunks, answer=answer, used_llm=used_llm)
+        timing["used_llm"] = bool(used_llm)
+        timing["chunks"] = len(chunks)
+        timing["total_ms"] = int((time.perf_counter() - t_api0) * 1000)
+        return QueryResponse(chunks=chunks, answer=answer, used_llm=used_llm, timings_ms=timing)
 
 
 class FeedbackRequest(BaseModel):
@@ -2735,9 +3205,7 @@ def api_feedback(
         "question": (req.question or "")[:500],
     }
     try:
-        if auth.firebase_uid:
-            dama_fb.append_pedagogy_event(auth.firebase_uid, "feedback_thumb", pl)
-        elif auth.diy_user_id is not None:
+        if auth.diy_user_id is not None:
             dama_diy.append_pedagogy_event(BASE_DIR, auth.diy_user_id, "feedback_thumb", pl)
     except Exception:
         pass
@@ -2758,9 +3226,6 @@ def api_pedagogy_event(
     """Append a custom pedagogy / analytics event (same user only). Use for study goals, milestones, etc."""
     auth = _require_api_user(request, authorization)
     k = (body.kind or "").strip()
-    if auth.firebase_uid:
-        eid = dama_fb.append_pedagogy_event(auth.firebase_uid, k, body.payload)
-        return JSONResponse({"ok": True, "id": eid})
     if auth.diy_user_id is not None:
         rid = dama_diy.append_pedagogy_event(BASE_DIR, auth.diy_user_id, k, body.payload)
         return JSONResponse({"ok": True, "id": rid})
@@ -2775,9 +3240,7 @@ def api_pedagogy_events_list(
 ) -> JSONResponse:
     """List this user's pedagogy events (newest first). Chat/search history stays under /api/conversations."""
     auth = _require_api_user(request, authorization)
-    if auth.firebase_uid:
-        rows = dama_fb.list_pedagogy_events(auth.firebase_uid, limit)
-    elif auth.diy_user_id is not None:
+    if auth.diy_user_id is not None:
         rows = dama_diy.list_pedagogy_events(BASE_DIR, auth.diy_user_id, limit)
     else:
         rows = []

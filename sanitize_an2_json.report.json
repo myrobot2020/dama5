@@ -1,0 +1,158 @@
+{
+  "changed": [
+    {
+      "sutta_id": "2.1.2",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.1.2",
+      "commentary_len_before": 1056,
+      "commentary_len_after": 1056,
+      "sutta_len_before": 428,
+      "sutta_len_after": 428
+    },
+    {
+      "sutta_id": "2.1.3",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.1.3",
+      "commentary_len_before": 748,
+      "commentary_len_after": 748,
+      "sutta_len_before": 439,
+      "sutta_len_after": 439
+    },
+    {
+      "sutta_id": "2.1.5",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.1.5",
+      "commentary_len_before": 1099,
+      "commentary_len_after": 1099,
+      "sutta_len_before": 1241,
+      "sutta_len_after": 1241
+    },
+    {
+      "sutta_id": "2.1.6",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.1.6",
+      "commentary_len_before": 2013,
+      "commentary_len_after": 2013,
+      "sutta_len_before": 759,
+      "sutta_len_after": 759
+    },
+    {
+      "sutta_id": "2.1.9",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.1.9",
+      "commentary_len_before": 1064,
+      "commentary_len_after": 1064,
+      "sutta_len_before": 683,
+      "sutta_len_after": 683
+    },
+    {
+      "sutta_id": "2.2.5",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.2.5",
+      "commentary_len_before": 2712,
+      "commentary_len_after": 470,
+      "sutta_len_before": 2077,
+      "sutta_len_after": 2077
+    },
+    {
+      "sutta_id": "2.3.9",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.3.9",
+      "commentary_len_before": 10281,
+      "commentary_len_after": 2227,
+      "sutta_len_before": 321,
+      "sutta_len_after": 321
+    },
+    {
+      "sutta_id": "2.4.1",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.4.1",
+      "commentary_len_before": 356,
+      "commentary_len_after": 356,
+      "sutta_len_before": 691,
+      "sutta_len_after": 691
+    },
+    {
+      "sutta_id": "2.4.2",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.4.2",
+      "commentary_len_before": 3039,
+      "commentary_len_after": 3039,
+      "sutta_len_before": 1238,
+      "sutta_len_after": 1238
+    },
+    {
+      "sutta_id": "2.4.4",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.4.4",
+      "commentary_len_before": 11954,
+      "commentary_len_after": 11954,
+      "sutta_len_before": 463,
+      "sutta_len_after": 463
+    },
+    {
+      "sutta_id": "2.5.6",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.5.6",
+      "commentary_len_before": 914,
+      "commentary_len_after": 914,
+      "sutta_len_before": 6393,
+      "sutta_len_after": 5746
+    },
+    {
+      "sutta_id": "2.10.1",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.10.1",
+      "commentary_len_before": 0,
+      "commentary_len_after": 0,
+      "sutta_len_before": 185,
+      "sutta_len_after": 185
+    },
+    {
+      "sutta_id": "2.10.2",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.10.2",
+      "commentary_len_before": 443,
+      "commentary_len_after": 443,
+      "sutta_len_before": 165,
+      "sutta_len_after": 165
+    },
+    {
+      "sutta_id": "2.11.2",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.11.2",
+      "commentary_len_before": 519,
+      "commentary_len_after": 519,
+      "sutta_len_before": 226,
+      "sutta_len_after": 226
+    },
+    {
+      "sutta_id": "2.11.8",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.11.8",
+      "commentary_len_before": 0,
+      "commentary_len_after": 0,
+      "sutta_len_before": 142,
+      "sutta_len_after": 142
+    },
+    {
+      "sutta_id": "2.11.9",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.11.9",
+      "commentary_len_before": 811,
+      "commentary_len_after": 811,
+      "sutta_len_before": 313,
+      "sutta_len_after": 313
+    },
+    {
+      "sutta_id": "2.12.1",
+      "commentary_id_before": "",
+      "commentary_id_after": "cAN 2.12.1",
+      "commentary_len_before": 446,
+      "commentary_len_after": 446,
+      "sutta_len_before": 271,
+      "sutta_len_after": 271
+    }
+  ],
+  "changed_count": 17
+}

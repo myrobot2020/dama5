@@ -1,0 +1,95 @@
+{
+  "books": {
+    "4": {
+      "sutta_files": 71,
+      "has_sutta_text": 71,
+      "has_commentary": 37,
+      "has_audio": 34,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "5": {
+      "sutta_files": 91,
+      "has_sutta_text": 91,
+      "has_commentary": 69,
+      "has_audio": 63,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "6": {
+      "sutta_files": 32,
+      "has_sutta_text": 32,
+      "has_commentary": 28,
+      "has_audio": 24,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "7": {
+      "sutta_files": 38,
+      "has_sutta_text": 38,
+      "has_commentary": 28,
+      "has_audio": 28,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "8": {
+      "sutta_files": 49,
+      "has_sutta_text": 49,
+      "has_commentary": 33,
+      "has_audio": 33,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "9": {
+      "sutta_files": 28,
+      "has_sutta_text": 28,
+      "has_commentary": 21,
+      "has_audio": 17,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "10": {
+      "sutta_files": 18,
+      "has_sutta_text": 18,
+      "has_commentary": 14,
+      "has_audio": 13,
+      "has_chain_block": 0,
+      "good_chains": 0,
+      "prod_ready": 0,
+      "parse_errors": 0
+    },
+    "11": {
+      "sutta_files": 3,
+      "has_sutta_text": 3,
+      "has_commentary": 3,
+      "has_audio": 3,
+      "has_chain_block": 3,
+      "good_chains": 3,
+      "prod_ready": 3,
+      "parse_errors": 0
+    }
+  },
+  "totals": {
+    "sutta_files": 330,
+    "has_sutta_text": 330,
+    "has_commentary": 233,
+    "has_audio": 215,
+    "has_chain_block": 3,
+    "good_chains": 3,
+    "prod_ready": 3,
+    "parse_errors": 0
+  },
+  "infer_jsonl": "C:\\Users\\ADMIN\\Desktop\\dama5\\chains_infer_an4_11.jsonl"
+}

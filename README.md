@@ -36,7 +36,7 @@ The `-Diy` switch only sets a dev session secret and `DAMA_SESSION_HTTPS_ONLY=0`
 .\start_dama5.ps1 -Global
 ```
 
-On HTTPS (e.g. Cloud Run), set `DAMA_SESSION_HTTPS_ONLY=1` and a strong `DAMA_SESSION_SECRET`. **Firebase**: set `DAMA_DIY_AUTH=0` and enable `DAMA_FIREBASE_ENABLED` — DIY mode wins when it is on.
+On HTTPS (e.g. Cloud Run), set `DAMA_SESSION_HTTPS_ONLY=1` and a strong `DAMA_SESSION_SECRET`.
 
 The app loads a repo-root `.env` on startup (variables already set in the shell take precedence).
 

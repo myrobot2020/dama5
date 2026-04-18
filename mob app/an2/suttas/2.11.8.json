@@ -1,0 +1,39 @@
+{
+  "sutta_id": "2.11.8",
+  "sutta_name_en": "",
+  "sutta_name_pali": "",
+  "sc_id": "an2.92",
+  "sc_url": "https://suttacentral.net/an2.92/en/sujato?lang=en&layout=plain&reference=none&notes=asterisk&highlight=false&script=latin",
+  "aud_file": "008_Anguttara Nikaya Book 2C 246 - 2121 by Bhante Hye Dhammavuddho Mahathera.mp3",
+  "aud_start_s": 1086.22,
+  "aud_end_s": 1260.3,
+  "chain": {
+    "items": [
+      "another's utterance",
+      "improper attention"
+    ],
+    "count": 2,
+    "is_ordered": false,
+    "category": "causes of wrong view"
+  },
+  "alignment": {
+    "rubric_version": "align_v4",
+    "scores_0_to_5": {
+      "source_ids_url": 5,
+      "text_to_source": 2,
+      "audio_segment": 5,
+      "commentary": 0,
+      "chain": 4,
+      "boundaries": 5
+    },
+    "total": 21,
+    "max_total": 30,
+    "needs_review": false,
+    "notes": "Auto-scored v4: sim_text_to_source=0.320, sim_commentary_chain=0.000, sim_commentary_kw=0.000, chain_supported=1/2"
+  },
+  "commentary_id": "cAN 2.11.8",
+  "sc_sutta": "92 “There are, mendicants, these two things. What two? Lack of conscience and prudence. These are the two things.”",
+  "sutta": "2.11.8 monks these two things are causes for the arising of wrong view what two another's utterance and antara consideration yoniso manasikara",
+  "commentary": "",
+  "valid": false
+}
