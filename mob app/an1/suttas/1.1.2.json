@@ -1,0 +1,15 @@
+{
+  "sutta_id": "1.1.2",
+  "sutta_name_en": "form",
+  "sutta_name_pali": "",
+  "sutta": "Thus have I heard on a certain occasion the exalted one was staying near Savatthi at Jetta grove in Anathapindika spa. The exalted one addressed the monks\n    \"Monks, I know of no other single form by which a man's heart is so enslaved as it is by that of a woman a woman's form obsesses a man's heart.\",\n    \"Monks, I know of no other single sound by which a man's heart is so enslaved as it is by the voice of a woman a woman's voice obsesses a man's heart.\",\n    \"Monks, I know of no other single scent by which a man's heart is so enslaved as it is by that of a woman.\",\n    \"Monks, I know of no other single taste by which a man's heart is so enslaved as it is by that of a woman.\",\n    \"Monks, I know of no other single touch by which a man's heart is so enslaved as it is by that of a woman.\",\n    \"Monks, I know of no other single form by which a woman's heart is so enslaved as it is by that of a man a man's form obsesses a woman's heart.\",\n    \"Monks, I know of no other single sound, smell, taste, touch by which a woman's heart is so enslaved as it is by the voice of a man a man's voice obsesses a woman's heart.",
+  "chain": {
+    "items": [
+      "form"
+    ],
+    "count": 1,
+    "is_ordered": true,
+    "category": "single dominant factor"
+  },
+  "valid": false
+}

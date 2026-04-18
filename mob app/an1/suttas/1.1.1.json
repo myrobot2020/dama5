@@ -1,0 +1,16 @@
+{
+  "sutta_id": "1.1.1",
+  "sutta_name_en": "heard",
+  "sutta_name_pali": "",
+  "sutta": "Thus have I heard on a certain occasion the exalted one was staying near Savatthi at Jetta grove in Anathapindika spa.",
+  "commentary": "All the suttas start with these words thus have I heard this is the buddhist tradition decided at the first sangha council the exalted one is a translation of Bhagavā Bhagavā is one of the ten names of the Buddha this monastery was donated by Anathapindika.",
+  "chain": {
+    "items": [
+      "heard"
+    ],
+    "count": 1,
+    "is_ordered": true,
+    "category": "single factor"
+  },
+  "valid": false
+}
