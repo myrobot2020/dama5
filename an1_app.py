@@ -1820,6 +1820,19 @@ app.add_middleware(
     https_only=session_https_only(),
 )
 
+# Optional CORS: mob app on another origin (e.g. Cloud Run static) calling /api — set DAMA_CORS_ORIGINS=origin1,origin2
+_cors_origins = [o.strip() for o in os.environ.get("DAMA_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    from starlette.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 register_auth_ui_routes(app, BASE_DIR)
 
 # Serve audio assets under /aud/ (real teacher recordings + audio_map.json)

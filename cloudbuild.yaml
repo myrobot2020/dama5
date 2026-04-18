@@ -1,17 +1,22 @@
 substitutions:
   _REGION: asia-south1
   _SERVICE: dama5
+  _MOB_SERVICE: dama5-mob
   _REPO: dama5
   _IMAGE: asia-south1-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
+  _MOB_IMAGE: asia-south1-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_MOB_SERVICE}:${SHORT_SHA}
   _VERTEX_CORPUS_GCS: gs://dama-492316-an-data-9690/vertex_corpus
-  # Optional: set to gs://your-bucket or gs://your-bucket/prefix to publish `mob app/dist/client` after build.
-  _MOB_APP_STATIC_BUCKET: ""
+  # FastAPI Cloud Run URL (for Vite build-time API client). Override in trigger if your API hostname differs.
+  _DAMA_API_PUBLIC_URL: "https://dama5-s7ak35u5na-el.a.run.app"
 
 steps:
-  # TanStack / Vite front-end in `mob app/` (fail fast before Vertex + Docker).
+  # --- Mob app (TanStack / Vite) → static nginx on Cloud Run ---
   - id: mob-app-build
     name: node:22-bookworm
     dir: mob app
+    waitFor: ["-"]
+    env:
+      - "VITE_DAMA_API_URL=${_DAMA_API_PUBLIC_URL}"
     entrypoint: bash
     args:
       - -lc
@@ -20,22 +25,57 @@ steps:
         npm ci
         npm run build
 
-  - id: mob-app-upload-static
+  - id: mob-app-stage-static
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
     args:
       - -lc
       - |
         set -euo pipefail
-        if [ -z "${_MOB_APP_STATIC_BUCKET}" ]; then
-          echo "mob app: skip static upload (set _MOB_APP_STATIC_BUCKET to gs://... to enable)"
-          exit 0
-        fi
-        gsutil -m rsync -r -d "/workspace/mob app/dist/client" "${_MOB_APP_STATIC_BUCKET}"
+        rm -rf "mob app/deploy/html"
+        mkdir -p "mob app/deploy/html"
+        cp -a "mob app/dist/client/." "mob app/deploy/html/"
     waitFor:
       - mob-app-build
 
-  - name: python:3.11-slim
+  - id: mob-app-docker-nginx
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_MOB_IMAGE}
+      - -f
+      - mob app/deploy/Dockerfile
+      - mob app/deploy
+    waitFor:
+      - mob-app-stage-static
+
+  - id: mob-app-push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_MOB_IMAGE}"]
+    waitFor:
+      - mob-app-docker-nginx
+
+  - id: mob-app-deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_MOB_SERVICE}
+      - --region=${_REGION}
+      - --platform=managed
+      - --image=${_MOB_IMAGE}
+      - --allow-unauthenticated
+      - --port=8080
+    waitFor:
+      - mob-app-push
+
+  # --- Vertex bundle (parallel with mob static pipeline after npm build) ---
+  - id: vertex-bundle
+    name: python:3.11-slim
+    waitFor:
+      - mob-app-build
     entrypoint: bash
     env:
       - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
@@ -46,27 +86,46 @@ steps:
         python -m pip install --no-cache-dir -r requirements-an1-vertex.txt
         python an1_build_vertex_bundle.py --shards /workspace/vertex_corpus --upload-base "${_VERTEX_CORPUS_GCS}"
 
-  - name: gcr.io/cloud-builders/docker
+  - id: docker-backend
+    name: gcr.io/cloud-builders/docker
     args: ["build", "-t", "${_IMAGE}", "."]
+    waitFor:
+      - vertex-bundle
 
-  - name: gcr.io/cloud-builders/docker
+  - id: push-backend
+    name: gcr.io/cloud-builders/docker
     args: ["push", "${_IMAGE}"]
+    waitFor:
+      - docker-backend
 
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+  - id: deploy-backend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
     args:
-      - run
-      - deploy
-      - "${_SERVICE}"
-      - "--region=${_REGION}"
-      - "--platform=managed"
-      - "--image=${_IMAGE}"
-      - "--allow-unauthenticated"
-      - "--set-env-vars=DAMA_RUNTIME=cloud,AN1_USE_VERTEX=1,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_REGION=${_REGION},AN1_VERTEX_MANIFEST_GCS_URI=${_VERTEX_CORPUS_GCS}/manifest.json,DAMA_AUDIO_GCS_BUCKET=dama-492316-an-data-9690,DAMA_AUDIO_GCS_PREFIX=aud/,DAMA_AUDIO_URL_TTL_SECONDS=900"
+      - -lc
+      - |
+        set -euo pipefail
+        MOB_URL=$$(gcloud run services describe ${_MOB_SERVICE} --region="${_REGION}" --format='value(status.url)' 2>/dev/null || true)
+        EV="DAMA_RUNTIME=cloud,AN1_USE_VERTEX=1,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_REGION=${_REGION},AN1_VERTEX_MANIFEST_GCS_URI=${_VERTEX_CORPUS_GCS}/manifest.json,DAMA_AUDIO_GCS_BUCKET=dama-492316-an-data-9690,DAMA_AUDIO_GCS_PREFIX=aud/,DAMA_AUDIO_URL_TTL_SECONDS=900"
+        if [ -n "$$MOB_URL" ]; then
+          EV="$$EV,DAMA_CORS_ORIGINS=$$MOB_URL"
+          echo "API CORS includes mob origin: $$MOB_URL"
+        else
+          echo "Mob URL not found; deploy API without DAMA_CORS_ORIGINS"
+        fi
+        gcloud run deploy ${_SERVICE} \
+          --region="${_REGION}" \
+          --platform=managed \
+          --image="${_IMAGE}" \
+          --allow-unauthenticated \
+          --set-env-vars="$$EV"
+    waitFor:
+      - push-backend
+      - mob-app-deploy
 
 images:
   - "${_IMAGE}"
+  - "${_MOB_IMAGE}"
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
