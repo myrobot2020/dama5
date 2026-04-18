@@ -4,8 +4,37 @@ substitutions:
   _REPO: dama5
   _IMAGE: asia-south1-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${SHORT_SHA}
   _VERTEX_CORPUS_GCS: gs://dama-492316-an-data-9690/vertex_corpus
+  # Optional: set to gs://your-bucket or gs://your-bucket/prefix to publish `mob app/dist/client` after build.
+  _MOB_APP_STATIC_BUCKET: ""
 
 steps:
+  # TanStack / Vite front-end in `mob app/` (fail fast before Vertex + Docker).
+  - id: mob-app-build
+    name: node:22-bookworm
+    dir: mob app
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        npm ci
+        npm run build
+
+  - id: mob-app-upload-static
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        if [ -z "${_MOB_APP_STATIC_BUCKET}" ]; then
+          echo "mob app: skip static upload (set _MOB_APP_STATIC_BUCKET to gs://... to enable)"
+          exit 0
+        fi
+        gsutil -m rsync -r -d "/workspace/mob app/dist/client" "${_MOB_APP_STATIC_BUCKET}"
+    waitFor:
+      - mob-app-build
+
   - name: python:3.11-slim
     entrypoint: bash
     env:

@@ -1,0 +1,2 @@
+# Built in a separate Cloud Build step; not part of the Python Cloud Run image.
+mob app
