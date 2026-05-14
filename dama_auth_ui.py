@@ -504,7 +504,7 @@ def register_auth_ui_routes(app: FastAPI, base_dir: Path) -> None:
     @app.get("/app")
     def app_chat(request: Request):
         if not _diy_on() and not _firebase_on():
-            return RedirectResponse(url="/", status_code=302)
+            return chat_response()
         # For DIY auth, verify session exists before serving the app
         if _diy_on():
             uid = request.session.get("uid")

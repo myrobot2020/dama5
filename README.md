@@ -26,9 +26,9 @@ Optional: place `freesound_community-gong-79191.mp3` or `temp_gong.wav` in the r
 .\start_dama5.ps1
 ```
 
-**Sign-in landing** (username + password, SQLite on the server, session cookie) is **on by default**. Open `/` to register or log in, then `/app` for chat. To allow **open chat with no login** (smoke tests, local hacks), set `DAMA_DIY_AUTH=0` in `.env` or the shell.
+**Sign-in landing** (username + password, SQLite on the server, session cookie) is **off by default** for easy local use. Open `/` for immediate chat. To enable a **login wall** (e.g. for a private server), set `DAMA_DIY_AUTH=1` in `.env` or the shell.
 
-The `-Diy` switch only sets a dev session secret and `DAMA_SESSION_HTTPS_ONLY=0` for plain HTTP when those are unset (auth is already on by default).
+The `-Diy` switch sets `DAMA_DIY_AUTH=1`, a dev session secret, and `DAMA_SESSION_HTTPS_ONLY=0` for plain HTTP.
 
 **Listen on all interfaces** (LAN or `0.0.0.0` binding):
 
@@ -36,7 +36,7 @@ The `-Diy` switch only sets a dev session secret and `DAMA_SESSION_HTTPS_ONLY=0`
 .\start_dama5.ps1 -Global
 ```
 
-On HTTPS (e.g. Cloud Run), set `DAMA_SESSION_HTTPS_ONLY=1` and a strong `DAMA_SESSION_SECRET`. **Firebase**: set `DAMA_DIY_AUTH=0` and enable `DAMA_FIREBASE_ENABLED` — DIY mode wins when it is on.
+On HTTPS (e.g. Cloud Run), set `DAMA_SESSION_HTTPS_ONLY=1` and a strong `DAMA_SESSION_SECRET`. **Firebase**: set `DAMA_FIREBASE_ENABLED=1` and ensure `DAMA_DIY_AUTH` is not 1 — DIY mode takes precedence if both are enabled.
 
 The app loads a repo-root `.env` on startup (variables already set in the shell take precedence).
 

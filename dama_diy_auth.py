@@ -34,9 +34,9 @@ def _verify_password(raw: str, stored_hash: str) -> bool:
 
 
 def diy_auth_enabled() -> bool:
-    """Username/password gate is on by default; set DAMA_DIY_AUTH=0 for open chat (no login)."""
+    """Username/password gate is off by default; set DAMA_DIY_AUTH=1 to enable (e.g. for private deploys)."""
     v = os.environ.get("DAMA_DIY_AUTH", "").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    return v in ("1", "true", "yes", "on")
 
 
 def db_path(base_dir: Path) -> Path:
